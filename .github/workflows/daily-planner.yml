@@ -116,12 +116,33 @@ jobs:
       # - name: Install dependencies
       #   run: pip install -r requirements.txt
 
+      - name: Refresh Claude OAuth token
+        if: steps.gate.outputs.needed == 'true'
+        id: refresh
+        env:
+          REFRESH_TOKEN: ${{ secrets.CLAUDE_REFRESH_TOKEN }}
+        run: |
+          RESPONSE=$(curl -s -X POST "https://console.anthropic.com/v1/oauth/token" \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            -d "grant_type=refresh_token&refresh_token=${REFRESH_TOKEN}&client_id=9d1c250a-e61b-44e4-8ed0-2de2c4df0899")
+
+          ACCESS_TOKEN=$(echo "$RESPONSE" | jq -r '.access_token // empty')
+          if [ -z "$ACCESS_TOKEN" ]; then
+            echo "::error::Failed to refresh OAuth token"
+            echo "$RESPONSE" | jq . 2>/dev/null || echo "$RESPONSE"
+            exit 1
+          fi
+
+          echo "::add-mask::$ACCESS_TOKEN"
+          echo "access_token=$ACCESS_TOKEN" >> "$GITHUB_OUTPUT"
+          echo "Token refreshed successfully"
+
       - name: Run Claude Code planner
         if: steps.gate.outputs.needed == 'true'
         uses: anthropics/claude-code-action@beta
         with:
           mode: agent
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_code_oauth_token: ${{ steps.refresh.outputs.access_token }}
           max_turns: 30
           # TODO: Customize allowed tools for your stack
           allowed_tools: "Bash(gh:*)"
