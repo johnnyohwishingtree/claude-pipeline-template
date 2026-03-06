@@ -1,0 +1,132 @@
+name: Relay Code Reviews to Claude
+
+# When a bot reviewer (Gemini/Copilot) leaves comments on a PR,
+# relay them to Claude to fix or dismiss. Cycles until resolved
+# or safety limit (3 rounds) is reached.
+
+on:
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: read
+
+jobs:
+  relay-review:
+    if: >-
+      github.event.review.state == 'changes_requested' ||
+      github.event.review.state == 'commented'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - name: Check reviewer and relay count
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REVIEWER: ${{ github.event.review.user.login }}
+        run: |
+          PR_NUM=${{ github.event.pull_request.number }}
+
+          # Only relay bot reviews — add your bot reviewers here
+          BOTS="gemini-code-assist[bot] copilot[bot]"
+          IS_BOT=false
+          for bot in $BOTS; do
+            if [ "$REVIEWER" = "$bot" ]; then
+              IS_BOT=true
+              break
+            fi
+          done
+
+          if [ "$IS_BOT" = "false" ]; then
+            echo "Review from $REVIEWER (not a bot reviewer) — skipping"
+            echo "should_relay=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          RELAY_COUNT=$(gh api \
+            "repos/${{ github.repository }}/issues/${PR_NUM}/comments" \
+            --jq '[.[] | select(.user.login == "github-actions[bot]") | select(.body | contains("A code reviewer"))] | length')
+
+          echo "Relay count so far: $RELAY_COUNT"
+
+          if [ "$RELAY_COUNT" -ge 3 ]; then
+            echo "Hit relay limit (3). Leaving comment for human review."
+            echo "should_relay=false" >> $GITHUB_OUTPUT
+            gh pr comment "$PR_NUM" --repo ${{ github.repository }} \
+              --body "Review relay limit reached (3 rounds). Claude and the reviewer could not fully resolve the feedback. A human should review the remaining comments."
+            exit 0
+          fi
+
+          echo "should_relay=true" >> $GITHUB_OUTPUT
+          echo "relay_round=$((RELAY_COUNT + 1))" >> $GITHUB_OUTPUT
+
+      - name: Collect review comments
+        if: steps.check.outputs.should_relay == 'true'
+        id: comments
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUM=${{ github.event.pull_request.number }}
+          REVIEWER="${{ github.event.review.user.login }}"
+
+          COMMENTS=$(gh api \
+            "repos/${{ github.repository }}/pulls/${PR_NUM}/comments" \
+            --jq "[.[] | select(.user.login == \"${REVIEWER}\") | {path: .path, body: .body, line: .line, id: .id, node_id: .node_id}]")
+
+          COUNT=$(echo "$COMMENTS" | jq 'length')
+          echo "Found $COUNT inline comments from $REVIEWER"
+
+          if [ "$COUNT" -eq 0 ]; then
+            REVIEW_BODY="${{ github.event.review.body }}"
+            if [ -n "$REVIEW_BODY" ]; then
+              echo "has_comments=false" >> $GITHUB_OUTPUT
+              echo "has_body=true" >> $GITHUB_OUTPUT
+            else
+              echo "has_comments=false" >> $GITHUB_OUTPUT
+              echo "has_body=false" >> $GITHUB_OUTPUT
+            fi
+            exit 0
+          fi
+
+          echo "has_comments=true" >> $GITHUB_OUTPUT
+          echo "$COMMENTS" | jq -r '.[] | "- **\(.path)** (line \(.line // "N/A")): \(.body)"' | head -15 > /tmp/review_summary.txt
+
+      - name: Relay inline comments to Claude
+        if: steps.check.outputs.should_relay == 'true' && steps.comments.outputs.has_comments == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          PR_NUM=${{ github.event.pull_request.number }}
+          REVIEWER="${{ github.event.review.user.login }}"
+          ROUND=${{ steps.check.outputs.relay_round }}
+          SUMMARY=$(cat /tmp/review_summary.txt)
+
+          gh pr comment "$PR_NUM" --repo ${{ github.repository }} --body "$(cat <<EOF
+          @claude A code reviewer ($REVIEWER) left feedback on this PR (review round $ROUND/3). Please address each comment:
+
+          $SUMMARY
+
+          For each comment:
+          1. If the feedback is valid, fix the code and push a commit
+          2. If the feedback is incorrect or not applicable, reply directly on the review comment explaining why
+          3. After addressing all comments, run tests to make sure nothing is broken
+
+          IMPORTANT: You MUST git add, git commit, and git push your changes before finishing.
+          EOF
+          )"
+
+      - name: Relay general review to Claude
+        if: steps.check.outputs.should_relay == 'true' && steps.comments.outputs.has_comments == 'false' && steps.comments.outputs.has_body == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          PR_NUM=${{ github.event.pull_request.number }}
+          REVIEWER="${{ github.event.review.user.login }}"
+          ROUND=${{ steps.check.outputs.relay_round }}
+          REVIEW_BODY="${{ github.event.review.body }}"
+
+          gh pr comment "$PR_NUM" --repo ${{ github.repository }} \
+            --body "@claude A code reviewer ($REVIEWER) left general feedback (round $ROUND/3): \"${REVIEW_BODY}\". Fix the code if valid, or reply explaining why it's not applicable. Run tests after any changes."

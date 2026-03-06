@@ -1,0 +1,83 @@
+name: Tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      # TODO: Set up your language runtime
+      # - name: Set up Python
+      #   uses: actions/setup-python@v5
+      #   with:
+      #     python-version: '3.11'
+      #     cache: 'pip'
+      # - name: Install dependencies
+      #   run: pip install -r requirements.txt
+
+      - name: Run tests
+        id: tests
+        run: |
+          # TODO: Replace with your test command
+          echo "No tests configured yet — edit .github/workflows/test.yml"
+          exit 0
+          # Python example:
+          # python -m pytest tests/ -v --tb=short 2>&1 | tee /tmp/test_output.txt
+          # exit ${PIPESTATUS[0]}
+
+      - name: Notify Claude on failure
+        if: (failure() || cancelled()) && steps.tests.outcome != 'success' && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          PR_NUM=${{ github.event.pull_request.number }}
+          BRANCH="${{ github.head_ref }}"
+
+          # Only auto-fix on claude/ branches (don't spam human PRs)
+          if [[ "$BRANCH" != claude/* ]]; then
+            echo "Not a claude/ branch — skipping"
+            exit 0
+          fi
+
+          # Limit fix attempts to 3
+          FIX_COUNT=$(gh pr view "$PR_NUM" --json comments \
+            -q '[.comments[] | select(.body | contains("@claude")) | select(.body | contains("Tests are failing"))] | length' 2>/dev/null || echo "0")
+
+          if [ "$FIX_COUNT" -ge 3 ]; then
+            echo "Already $FIX_COUNT fix attempts — needs human review"
+            exit 0
+          fi
+
+          # Extract failure summary if test output was captured
+          FAILURES=""
+          if [ -f /tmp/test_output.txt ]; then
+            FAILURES=$(grep -E '(FAILED |ERRORS |ERROR |assert |Error:)' /tmp/test_output.txt | tail -30 || echo "")
+          fi
+
+          if [ -n "$FAILURES" ]; then
+            BODY="@claude Tests are failing on this PR. Here are the failures:
+
+          \`\`\`
+          ${FAILURES}
+          \`\`\`
+
+          Fix all of these failures. IMPORTANT: You MUST git add, git commit, and git push your changes before finishing. (Auto-fix attempt $((FIX_COUNT + 1))/3)"
+            gh pr comment "$PR_NUM" --body "$BODY"
+          else
+            gh pr comment "$PR_NUM" \
+              --body "@claude Tests are failing on this PR. Check the test output, fix all failures. IMPORTANT: You MUST git add, git commit, and git push your changes before finishing. (Auto-fix attempt $((FIX_COUNT + 1))/3)"
+          fi

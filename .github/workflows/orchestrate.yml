@@ -1,0 +1,136 @@
+name: Orchestrate Story Pipeline
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [master]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  advance-pipeline:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Extract story issue number from PR
+        id: extract
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          PR_BODY=$(gh pr view ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --json body -q '.body')
+          ISSUE_NUM=$(echo "$PR_BODY" | grep -oP '(?:Closes|Fixes|Resolves)\s+#(\d+)' | head -1 | grep -oP '\d+' || true)
+          if [ -z "$ISSUE_NUM" ]; then
+            echo "No story issue linked to this PR — skipping orchestration"
+            echo "found=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          HAS_STORY_LABEL=$(gh issue view "$ISSUE_NUM" --repo ${{ github.repository }} --json labels -q '.labels[].name' | grep '^story$' || true)
+          if [ -z "$HAS_STORY_LABEL" ]; then
+            echo "Issue #$ISSUE_NUM is not a story — skipping orchestration"
+            echo "found=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          echo "issue_num=$ISSUE_NUM" >> $GITHUB_OUTPUT
+          echo "found=true" >> $GITHUB_OUTPUT
+          echo "Completed story: #$ISSUE_NUM"
+
+      - name: Close completed story
+        if: steps.extract.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          ISSUE_NUM=${{ steps.extract.outputs.issue_num }}
+          gh issue close "$ISSUE_NUM" --repo ${{ github.repository }} --comment "Completed via PR #${{ github.event.pull_request.number }}"
+          gh issue edit "$ISSUE_NUM" --repo ${{ github.repository }} --remove-label "pending" --remove-label "in-progress" --add-label "completed" || true
+
+      - name: Find next story in epic
+        if: steps.extract.outputs.found == 'true'
+        id: next
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          ISSUE_NUM=${{ steps.extract.outputs.issue_num }}
+
+          EPIC_LABEL=$(gh issue view "$ISSUE_NUM" --repo ${{ github.repository }} --json labels -q '.labels[].name' | grep '^epic:' | head -1)
+          if [ -z "$EPIC_LABEL" ]; then
+            echo "Story #$ISSUE_NUM has no epic label — cannot find next story"
+            echo "found=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          echo "Epic label: $EPIC_LABEL"
+
+          NEXT_STORY=$(gh issue list \
+            --repo ${{ github.repository }} \
+            --label "story" \
+            --label "pending" \
+            --label "$EPIC_LABEL" \
+            --state open \
+            --json number \
+            -q '[.[] | .number] | sort | .[0]')
+
+          if [ -z "$NEXT_STORY" ] || [ "$NEXT_STORY" = "null" ]; then
+            echo "All stories in $EPIC_LABEL are complete!"
+            echo "found=false" >> $GITHUB_OUTPUT
+
+            EPIC_NUM=$(gh issue list \
+              --repo ${{ github.repository }} \
+              --label "epic" \
+              --label "$EPIC_LABEL" \
+              --state open \
+              --json number \
+              -q '.[0].number')
+            if [ -n "$EPIC_NUM" ] && [ "$EPIC_NUM" != "null" ]; then
+              gh issue comment "$EPIC_NUM" --repo ${{ github.repository }} \
+                --body "All stories in this epic have been completed. Review the merged PRs for the full implementation."
+              gh issue close "$EPIC_NUM" --repo ${{ github.repository }}
+            fi
+            exit 0
+          fi
+
+          echo "next_story=$NEXT_STORY" >> $GITHUB_OUTPUT
+          echo "found=true" >> $GITHUB_OUTPUT
+          echo "Next story to implement: #$NEXT_STORY"
+
+      - name: Safety check for consecutive failures
+        if: steps.next.outputs.found == 'true'
+        id: safety
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          FAILED=$(gh pr list \
+            --repo ${{ github.repository }} \
+            --state closed \
+            --limit 5 \
+            --json mergedAt \
+            -q '[.[] | select(.mergedAt == null)] | length')
+          if [ "$FAILED" -ge 3 ]; then
+            echo "WARNING: 3+ recent PRs failed. Pausing pipeline."
+            echo "safe=false" >> $GITHUB_OUTPUT
+            gh issue create \
+              --repo ${{ github.repository }} \
+              --title "Pipeline paused: consecutive PR failures" \
+              --body "The story orchestrator detected 3+ consecutive unmerged PRs. Please review recent failures and restart the pipeline manually by commenting @claude on the next pending story." \
+              --label "bug"
+          else
+            echo "safe=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Trigger next story
+        if: steps.next.outputs.found == 'true' && steps.safety.outputs.safe == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          NEXT=${{ steps.next.outputs.next_story }}
+          echo "Triggering story #$NEXT"
+
+          gh issue edit "$NEXT" --repo ${{ github.repository }} \
+            --remove-label "pending" --add-label "in-progress" || true
+
+          # TODO: Customize the test command in this trigger message
+          gh issue comment "$NEXT" --repo ${{ github.repository }} \
+            --body "@claude Implement this story. Read CLAUDE.md for project context and follow the skill referenced in this issue. IMPORTANT: Commit and push frequently — after every 2-3 file changes, stage, commit, and push. Do NOT wait until the end. Run tests before your final commit. Create a PR with 'Closes #$NEXT' in the body when done."

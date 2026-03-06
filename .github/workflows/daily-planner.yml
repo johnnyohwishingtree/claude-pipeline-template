@@ -1,0 +1,262 @@
+name: Planner
+
+on:
+  schedule:
+    # Weekend window: Friday 5pm PT - Sunday 7pm PT
+    # = Saturday 01:00 UTC - Monday 03:00 UTC
+    # TODO: Adjust schedule for your timezone and preferences
+    - cron: '0 */5 * * 0,6'  # Every 5 hours on Saturday and Sunday (UTC)
+    - cron: '0 1,2 * * 1'    # Monday 01:00 and 02:00 UTC (still Sunday PT)
+  workflow_dispatch:           # Manual override — works anytime
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check if planning is needed
+        id: gate
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          REPO: ${{ github.repository }}
+          MAX_OPEN_EPICS: 3
+        run: |
+          # For scheduled runs, enforce the weekend window
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            DOW=$(date -u +%w)
+            HOUR=$(date -u +%H)
+
+            IN_WINDOW=false
+            if [ "$DOW" -eq 6 ] && [ "$HOUR" -ge 1 ]; then IN_WINDOW=true; fi
+            if [ "$DOW" -eq 0 ]; then IN_WINDOW=true; fi
+            if [ "$DOW" -eq 1 ] && [ "$HOUR" -lt 3 ]; then IN_WINDOW=true; fi
+
+            if [ "$IN_WINDOW" = "false" ]; then
+              echo "Outside planning window — skipping"
+              echo "needed=false" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+          fi
+
+          OPEN_EPICS=$(gh issue list --repo "$REPO" --label "epic" --state open --json number -q 'length')
+          echo "Open epics: $OPEN_EPICS"
+
+          if [ "$OPEN_EPICS" -ge "$MAX_OPEN_EPICS" ]; then
+            echo "Already $OPEN_EPICS open epics (max $MAX_OPEN_EPICS) — skipping"
+            echo "needed=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          OPEN_STORIES=$(gh issue list --repo "$REPO" --label "story" --state open --json number -q 'length')
+          echo "Open stories: $OPEN_STORIES"
+
+          if [ "$OPEN_STORIES" -ge 10 ]; then
+            echo "Already $OPEN_STORIES open stories — backlog is full"
+            echo "needed=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "needed=true" >> $GITHUB_OUTPUT
+
+      - name: Gather context for planner
+        if: steps.gate.outputs.needed == 'true'
+        id: context
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          REPO: ${{ github.repository }}
+        run: |
+          echo "=== Gathering project context ==="
+
+          EXISTING=$(gh issue list --repo "$REPO" --label "epic" --state all --limit 20 \
+            --json number,title,state -q '.[] | "- #\(.number) [\(.state)] \(.title)"')
+
+          STORIES=$(gh issue list --repo "$REPO" --label "story" --state open \
+            --json number,title -q '.[] | "- #\(.number) \(.title)"')
+
+          RECENT_PRS=$(gh pr list --repo "$REPO" --state merged --limit 10 \
+            --json number,title -q '.[] | "- #\(.number) \(.title)"')
+
+          cat > /tmp/planner_context.txt << CTXEOF
+          EXISTING EPICS:
+          $EXISTING
+
+          OPEN STORIES:
+          $STORIES
+
+          RECENTLY MERGED PRS:
+          $RECENT_PRS
+          CTXEOF
+
+          echo "context_file=/tmp/planner_context.txt" >> $GITHUB_OUTPUT
+          cat /tmp/planner_context.txt
+
+      # TODO: Set up your language runtime and install dependencies
+      # - name: Set up Python
+      #   uses: actions/setup-python@v5
+      #   with:
+      #     python-version: '3.11'
+      #     cache: 'pip'
+      # - name: Install dependencies
+      #   run: pip install -r requirements.txt
+
+      - name: Run Claude Code planner
+        if: steps.gate.outputs.needed == 'true'
+        uses: anthropics/claude-code-action@beta
+        with:
+          mode: agent
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          max_turns: 30
+          # TODO: Customize allowed tools for your stack
+          allowed_tools: "Bash(gh:*)"
+          direct_prompt: |
+            You are a technical product manager for this project. Your job is to
+            identify the single most impactful improvement to make next and create
+            a GitHub epic with stories that the autonomous pipeline can execute.
+
+            ## Step 1: Understand the project
+
+            Read CLAUDE.md for full project context.
+
+            ## Step 2: Check what already exists
+
+            Run these commands to see existing work:
+            ```
+            gh issue list --label "epic" --state all --limit 20
+            gh issue list --label "story" --state open
+            gh pr list --state merged --limit 10
+            ```
+
+            Do NOT create an epic that duplicates or overlaps with existing ones.
+
+            ## Step 3: Choose ONE improvement area
+
+            Pick the single most impactful improvement. Consider:
+            - New features
+            - Bug fixes and code quality
+            - Testing improvements
+            - Performance optimization
+            - Documentation
+            - Developer experience
+
+            TODO: Customize these categories for your project in the workflow file.
+
+            ## Step 4: Create the epic
+
+            Pick a short slug for the epic (e.g., "auth-system", "perf-cache").
+
+            Create labels first:
+            ```bash
+            gh label create "epic:<slug>" --color "0E8A16" --description "Epic: <title>" 2>/dev/null || true
+            ```
+
+            Create the epic issue:
+            ```bash
+            gh issue create \
+              --title "Epic: <goal>" \
+              --label "epic" \
+              --label "epic:<slug>" \
+              --body "$(cat <<'EOF'
+            ## Goal
+            <description>
+
+            ## Stories
+            - [ ] #__ Story 1: <title>
+            ...
+
+            ## Success Criteria
+            - <criteria>
+            EOF
+            )"
+            ```
+
+            Create each story:
+            ```bash
+            gh issue create \
+              --title "Story: <task>" \
+              --label "story" \
+              --label "pending" \
+              --label "epic:<slug>" \
+              --body "$(cat <<'EOF'
+            **Parent Epic:** #<epic_number>
+            **Skill:** /plan-feature
+
+            ## Description
+            <what to implement>
+
+            ## Acceptance Criteria
+            - [ ] Implementation complete
+            - [ ] Tests pass
+            - [ ] Documentation updated if needed
+
+            ## Files to Create/Modify
+            - <file paths>
+            EOF
+            )"
+            ```
+
+            ## Rules
+            - Create exactly 1 epic with 3-6 stories
+            - Stories are ordered by dependency (lower issue number = do first)
+            - Each story must be completable in a single Claude session
+            - Include file paths so Claude knows what to create/modify
+            - The LAST story should update docs/tests
+            - Do NOT start implementing — only create issues
+
+      - name: Trigger first story
+        if: steps.gate.outputs.needed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          REPO: ${{ github.repository }}
+        run: |
+          NEWEST_EPIC=$(gh issue list --repo "$REPO" --label "epic" --state open \
+            --json number -q '[.[] | .number] | sort | last')
+
+          if [ -z "$NEWEST_EPIC" ] || [ "$NEWEST_EPIC" = "null" ]; then
+            echo "No open epic found"
+            exit 0
+          fi
+
+          EPIC_LABEL=$(gh issue view "$NEWEST_EPIC" --repo "$REPO" --json labels \
+            -q '[.labels[].name | select(startswith("epic:"))] | .[0]')
+
+          if [ -z "$EPIC_LABEL" ]; then
+            echo "Epic #$NEWEST_EPIC has no epic: label — skipping"
+            exit 0
+          fi
+
+          FIRST_STORY=$(gh issue list --repo "$REPO" \
+            --label "story" --label "pending" --label "$EPIC_LABEL" \
+            --state open --json number \
+            -q '[.[] | .number] | sort | .[0]')
+
+          if [ -z "$FIRST_STORY" ] || [ "$FIRST_STORY" = "null" ]; then
+            echo "No pending stories found for $EPIC_LABEL"
+            exit 0
+          fi
+
+          ANY_IN_PROGRESS=$(gh issue list --repo "$REPO" \
+            --label "story" --label "in-progress" \
+            --state open --json number -q 'length')
+
+          if [ "$ANY_IN_PROGRESS" -gt 0 ]; then
+            echo "Another story is already in-progress — pipeline will pick this up"
+            exit 0
+          fi
+
+          echo "Triggering first story: #$FIRST_STORY"
+          gh issue edit "$FIRST_STORY" --repo "$REPO" \
+            --remove-label "pending" --add-label "in-progress" || true
+          gh issue comment "$FIRST_STORY" --repo "$REPO" \
+            --body "@claude Implement this story. Read CLAUDE.md for project context and follow the skill referenced in this issue. Create a PR with 'Closes #$FIRST_STORY' in the body when done. Run all tests before committing."

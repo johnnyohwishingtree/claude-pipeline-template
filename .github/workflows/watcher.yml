@@ -1,0 +1,276 @@
+name: Pipeline Watcher
+
+on:
+  schedule:
+    - cron: '*/20 * * * *'  # Every 20 minutes
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check pipeline health
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          REPO: ${{ github.repository }}
+          MAX_RETRIES: 5
+          GRACE_MINUTES: 15
+          MAX_CONCURRENT: 3
+        run: |
+          set -euo pipefail
+          echo "=== Pipeline Watcher $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
+
+          # Helper: minutes since an ISO timestamp
+          minutes_ago() {
+            local ts="$1"
+            local then=$(date -d "$ts" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%SZ" "$ts" +%s 2>/dev/null || echo 0)
+            local now=$(date +%s)
+            echo $(( (now - then) / 60 ))
+          }
+
+          # 1. Count active Claude workflows
+          ACTIVE_RUNS=$(gh run list --repo "$REPO" --workflow claude.yml --status in_progress --json databaseId -q 'length')
+          QUEUED_RUNS=$(gh run list --repo "$REPO" --workflow claude.yml --status queued --json databaseId -q 'length')
+          TOTAL_ACTIVE=$((ACTIVE_RUNS + QUEUED_RUNS))
+
+          echo "Claude workflows: $ACTIVE_RUNS running, $QUEUED_RUNS queued ($TOTAL_ACTIVE total, limit $MAX_CONCURRENT)"
+
+          if [ "$TOTAL_ACTIVE" -ge "$MAX_CONCURRENT" ]; then
+            echo "At concurrency limit — nothing to do"
+            exit 0
+          fi
+
+          SLOTS_AVAILABLE=$((MAX_CONCURRENT - TOTAL_ACTIVE))
+          echo "Slots available: $SLOTS_AVAILABLE"
+
+          # 2. Check open claude/ PRs — enable auto-merge, detect issues
+          echo ""
+          echo "--- Checking open claude/ PRs ---"
+          CLAUDE_PRS=$(gh pr list --repo "$REPO" --state open --json number,headRefName,createdAt \
+            -q '[.[] | select(.headRefName | startswith("claude/"))]' 2>/dev/null || echo "[]")
+
+          BUSY_EPICS=""
+
+          for row in $(echo "$CLAUDE_PRS" | jq -c '.[]'); do
+            PR_NUM=$(echo "$row" | jq -r '.number')
+            PR_BRANCH=$(echo "$row" | jq -r '.headRefName')
+
+            echo "PR #$PR_NUM ($PR_BRANCH):"
+
+            # Enable auto-merge
+            gh pr merge "$PR_NUM" --repo "$REPO" --squash --auto 2>/dev/null \
+              || echo "  (auto-merge already set or unavailable)"
+
+            # Track busy epics
+            ISSUE_NUM=$(echo "$PR_BRANCH" | grep -oE 'issue-[0-9]+' | grep -oE '[0-9]+' || echo "")
+            EPIC_LABEL=""
+            if [ -n "$ISSUE_NUM" ]; then
+              EPIC_LABEL=$(gh issue view "$ISSUE_NUM" --repo "$REPO" --json labels \
+                -q '[.labels[].name | select(startswith("epic:"))] | .[0]' 2>/dev/null || echo "")
+            fi
+
+            if [ -n "$EPIC_LABEL" ]; then
+              BUSY_EPICS="$BUSY_EPICS $EPIC_LABEL"
+              echo "  Epic: $EPIC_LABEL (busy)"
+            fi
+
+            # Check for merge conflicts
+            MERGEABLE=$(gh pr view "$PR_NUM" --repo "$REPO" --json mergeable -q '.mergeable' 2>/dev/null || echo "UNKNOWN")
+            if [ "$MERGEABLE" = "CONFLICTING" ]; then
+              echo "  Merge conflict detected — commenting for rebase"
+              gh pr comment "$PR_NUM" --repo "$REPO" \
+                --body "@claude This PR has merge conflicts with master. Please rebase onto master and resolve conflicts, then push." \
+                2>/dev/null || true
+            fi
+
+            # Check for failing or missing CI
+            CI_CONCLUSION=$(gh pr view "$PR_NUM" --repo "$REPO" --json statusCheckRollup \
+              -q '[.statusCheckRollup[] | select(.name == "test")] | .[0].conclusion' 2>/dev/null || echo "UNKNOWN")
+
+            LAST_COMMIT_TIME=$(gh api "repos/$REPO/pulls/$PR_NUM/commits" \
+              -q '.[-1].commit.author.date' 2>/dev/null || echo "")
+            COMMIT_AGO=0
+            if [ -n "$LAST_COMMIT_TIME" ]; then
+              COMMIT_AGO=$(minutes_ago "$LAST_COMMIT_TIME")
+            fi
+
+            # Missing CI check
+            if [ -z "$CI_CONCLUSION" ] || [ "$CI_CONCLUSION" = "null" ]; then
+              echo "  NO CI CHECK on HEAD commit, last commit ${COMMIT_AGO}m ago"
+              if [ "$COMMIT_AGO" -ge "$GRACE_MINUTES" ]; then
+                echo "  Re-triggering test.yml for branch $PR_BRANCH"
+                gh workflow run test.yml --repo "$REPO" --ref "$PR_BRANCH" 2>/dev/null \
+                  || echo "  Could not trigger test.yml"
+                gh pr close "$PR_NUM" --repo "$REPO" 2>/dev/null || true
+                sleep 2
+                gh pr reopen "$PR_NUM" --repo "$REPO" 2>/dev/null || true
+                echo "  Closed and reopened PR #$PR_NUM to trigger CI"
+              fi
+
+            # Failing CI
+            elif [ "$CI_CONCLUSION" = "FAILURE" ]; then
+              echo "  CI FAILING, last commit ${COMMIT_AGO}m ago"
+              if [ "$COMMIT_AGO" -ge "$GRACE_MINUTES" ]; then
+                PR_FIX_COUNT=$(gh pr view "$PR_NUM" --repo "$REPO" --json comments \
+                  -q '[.comments[] | select(.body | contains("@claude")) | select(.body | contains("failing"))] | length' 2>/dev/null || echo "0")
+
+                if [ "$PR_FIX_COUNT" -lt "$MAX_RETRIES" ]; then
+                  RUN_ID=$(gh run list --repo "$REPO" --branch "$PR_BRANCH" --workflow test.yml \
+                    --limit 1 --json databaseId -q '.[0].databaseId' 2>/dev/null || echo "")
+                  FAILURES=""
+                  if [ -n "$RUN_ID" ]; then
+                    FAILURES=$(gh run view "$RUN_ID" --repo "$REPO" --log 2>/dev/null \
+                      | grep -E '(FAILED |assert |Error:)' | head -30 || echo "")
+                  fi
+
+                  echo "  Re-triggering fix (attempt $((PR_FIX_COUNT + 1))/$MAX_RETRIES)"
+                  if [ -n "$FAILURES" ]; then
+                    COMMENT_BODY="@claude Tests are still failing on this PR and no new commits in ${COMMIT_AGO}m. Fix these failures:
+
+          \`\`\`
+          ${FAILURES}
+          \`\`\`
+
+          Run tests to see all failures. Fix every failing test. IMPORTANT: You MUST git add, git commit, and git push your changes. (Watcher fix attempt $((PR_FIX_COUNT + 1))/$MAX_RETRIES)"
+                  else
+                    COMMENT_BODY="@claude Tests are still failing on this PR and no new commits in ${COMMIT_AGO}m. Run tests, fix all failures. IMPORTANT: You MUST git add, git commit, and git push your changes. (Watcher fix attempt $((PR_FIX_COUNT + 1))/$MAX_RETRIES)"
+                  fi
+                  gh pr comment "$PR_NUM" --repo "$REPO" --body "$COMMENT_BODY" 2>/dev/null || true
+                else
+                  echo "  ALERT: $PR_FIX_COUNT fix attempts on PR — needs human review"
+                fi
+              fi
+            else
+              echo "  CI status: $CI_CONCLUSION"
+            fi
+          done
+
+          # 3. Check in-progress stories that are stuck
+          echo ""
+          echo "--- Checking in-progress stories ---"
+          IN_PROGRESS=$(gh issue list --repo "$REPO" --label "story" --label "in-progress" \
+            --state open --json number -q '.[].number' 2>/dev/null || true)
+
+          for ISSUE_NUM in $IN_PROGRESS; do
+            echo "Story #$ISSUE_NUM is in-progress"
+
+            if [ "$SLOTS_AVAILABLE" -le 0 ]; then
+              echo "  No slots available — skipping"
+              continue
+            fi
+
+            STORY_EPIC=$(gh issue view "$ISSUE_NUM" --repo "$REPO" --json labels \
+              -q '[.labels[].name | select(startswith("epic:"))] | .[0]' 2>/dev/null || echo "")
+
+            if echo "$BUSY_EPICS" | grep -q "$STORY_EPIC" 2>/dev/null; then
+              echo "  Epic $STORY_EPIC is busy (has open PR) — skipping"
+              continue
+            fi
+
+            RETRY_COUNT=$(gh issue view "$ISSUE_NUM" --repo "$REPO" --json comments \
+              -q '[.comments[] | select(.body | contains("@claude"))] | length')
+
+            if [ "$RETRY_COUNT" -ge "$MAX_RETRIES" ]; then
+              echo "  ALERT: $RETRY_COUNT attempts — pausing this story"
+              EXISTING_ALERT=$(gh issue list --repo "$REPO" --label "pipeline-stuck" \
+                --state open --json number -q 'length')
+              if [ "$EXISTING_ALERT" -eq 0 ]; then
+                gh issue create --repo "$REPO" \
+                  --title "Pipeline stuck: Story #$ISSUE_NUM failed after $RETRY_COUNT attempts" \
+                  --label "bug" --label "pipeline-stuck" \
+                  --body "Story #$ISSUE_NUM has been triggered $RETRY_COUNT times without producing a merged PR. Check Actions logs and fix manually."
+              fi
+              continue
+            fi
+
+            LAST_TRIGGER_TIME=$(gh issue view "$ISSUE_NUM" --repo "$REPO" --json comments \
+              -q '[.comments[] | select(.body | contains("@claude"))] | last | .createdAt' 2>/dev/null || echo "")
+
+            if [ -n "$LAST_TRIGGER_TIME" ]; then
+              AGO=$(minutes_ago "$LAST_TRIGGER_TIME")
+              echo "  Last trigger: ${AGO}m ago"
+              if [ "$AGO" -lt "$GRACE_MINUTES" ]; then
+                echo "  Within grace period (${GRACE_MINUTES}m) — skipping"
+                continue
+              fi
+            fi
+
+            echo "  Re-triggering (attempt $((RETRY_COUNT + 1))/$MAX_RETRIES)"
+            gh issue comment "$ISSUE_NUM" --repo "$REPO" \
+              --body "@claude Implement this story. Read CLAUDE.md for project context and follow the skill referenced in this issue. IMPORTANT: Commit and push frequently. Run tests before your final commit. Create a PR with 'Closes #$ISSUE_NUM' in the body when done. (Retry #$((RETRY_COUNT + 1)) by pipeline watcher)"
+
+            BUSY_EPICS="$BUSY_EPICS $STORY_EPIC"
+            SLOTS_AVAILABLE=$((SLOTS_AVAILABLE - 1))
+          done
+
+          # 4. Check for stalled epics
+          echo ""
+          echo "--- Checking for stalled epics ---"
+          EPIC_LABELS=$(gh issue list --repo "$REPO" --label "epic" --state open --json labels \
+            -q '[.[].labels[].name | select(startswith("epic:"))] | unique | .[]' 2>/dev/null || true)
+
+          for EPIC_LABEL in $EPIC_LABELS; do
+            echo "Epic: $EPIC_LABEL"
+
+            if [ "$SLOTS_AVAILABLE" -le 0 ]; then
+              echo "  No slots available — skipping"
+              continue
+            fi
+
+            if echo "$BUSY_EPICS" | grep -q "$EPIC_LABEL" 2>/dev/null; then
+              echo "  Already busy — skipping"
+              continue
+            fi
+
+            HAS_IN_PROGRESS=$(gh issue list --repo "$REPO" \
+              --label "story" --label "in-progress" --label "$EPIC_LABEL" \
+              --state open --json number -q 'length')
+
+            if [ "$HAS_IN_PROGRESS" -gt 0 ]; then
+              echo "  Has in-progress story — handled above"
+              continue
+            fi
+
+            NEXT_PENDING=$(gh issue list --repo "$REPO" \
+              --label "story" --label "pending" --label "$EPIC_LABEL" \
+              --state open --json number \
+              -q '[.[] | .number] | sort | .[0]')
+
+            if [ -z "$NEXT_PENDING" ] || [ "$NEXT_PENDING" = "null" ]; then
+              echo "  No pending stories — epic may be complete"
+              ALL_OPEN=$(gh issue list --repo "$REPO" \
+                --label "story" --label "$EPIC_LABEL" \
+                --state open --json number -q 'length')
+              if [ "$ALL_OPEN" -eq 0 ]; then
+                EPIC_NUM=$(gh issue list --repo "$REPO" \
+                  --label "epic" --label "$EPIC_LABEL" \
+                  --state open --json number -q '.[0].number')
+                if [ -n "$EPIC_NUM" ] && [ "$EPIC_NUM" != "null" ]; then
+                  echo "  Closing epic #$EPIC_NUM — all stories complete"
+                  gh issue comment "$EPIC_NUM" --repo "$REPO" \
+                    --body "All stories in this epic have been completed. (Detected by pipeline watcher)"
+                  gh issue close "$EPIC_NUM" --repo "$REPO"
+                fi
+              fi
+              continue
+            fi
+
+            echo "  STALLED — triggering story #$NEXT_PENDING"
+            gh issue edit "$NEXT_PENDING" --repo "$REPO" \
+              --remove-label "pending" --add-label "in-progress" || true
+            gh issue comment "$NEXT_PENDING" --repo "$REPO" \
+              --body "@claude Implement this story. Read CLAUDE.md for project context and follow the skill referenced in this issue. IMPORTANT: Commit and push frequently. Run tests before your final commit. Create a PR with 'Closes #$NEXT_PENDING' in the body when done. (Pipeline watcher: orchestrator missed handoff)"
+
+            BUSY_EPICS="$BUSY_EPICS $EPIC_LABEL"
+            SLOTS_AVAILABLE=$((SLOTS_AVAILABLE - 1))
+          done
+
+          echo ""
+          echo "=== Watcher complete — slots used: $((MAX_CONCURRENT - SLOTS_AVAILABLE))/$MAX_CONCURRENT ==="

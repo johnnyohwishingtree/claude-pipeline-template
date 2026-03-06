@@ -1,0 +1,60 @@
+name: Story
+description: A single implementable unit of work for Claude
+labels: ["story", "pending"]
+body:
+  - type: input
+    id: epic
+    attributes:
+      label: Parent Epic
+      description: "Epic issue number (e.g., #42)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: skill
+    attributes:
+      label: Skill to Use
+      description: Which Claude skill should be followed for this story?
+      options:
+        - /plan-feature
+        - /test-suite
+        - /refactor-design
+        - /organize
+        - /update-architecture
+        - /cleanup
+        - /qa
+        - (none - general implementation)
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What needs to be implemented?
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance Criteria
+      description: Checklist of requirements
+      value: |
+        - [ ] Implementation complete
+        - [ ] Tests pass
+        - [ ] Documentation updated if needed
+    validations:
+      required: true
+
+  - type: textarea
+    id: files
+    attributes:
+      label: Files to Create/Modify
+      description: List expected file paths (helps Claude scope the work)
+
+  - type: textarea
+    id: depends-on
+    attributes:
+      label: Dependencies
+      description: "Story issues that must be completed first (e.g., Depends on #43)"

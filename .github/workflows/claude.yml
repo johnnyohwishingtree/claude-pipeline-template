@@ -1,0 +1,238 @@
+name: Claude Code
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+
+jobs:
+  claude:
+    if: |
+      contains(github.event.comment.body, '@claude') &&
+      (github.event.issue != null || github.event.pull_request != null)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Switch to PR branch if applicable
+        if: github.event.issue.pull_request
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          PR_NUM=${{ github.event.issue.number }}
+          PR_BRANCH=$(gh pr view "$PR_NUM" --json headRefName -q '.headRefName')
+          echo "Switching to PR branch: $PR_BRANCH"
+          git checkout "$PR_BRANCH"
+
+      # TODO: Set up your language runtime and install dependencies
+      # Examples for common stacks:
+      #
+      # Python:
+      # - name: Set up Python
+      #   uses: actions/setup-python@v5
+      #   with:
+      #     python-version: '3.11'
+      #     cache: 'pip'
+      # - name: Install dependencies
+      #   run: pip install -r requirements.txt
+      #
+      # Node.js:
+      # - name: Set up Node.js
+      #   uses: actions/setup-node@v4
+      #   with:
+      #     node-version: '20'
+      #     cache: 'npm'
+      # - name: Install dependencies
+      #   run: npm ci
+
+      - name: Run Claude Code
+        id: claude
+        uses: anthropics/claude-code-action@beta
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          max_turns: 100
+          # TODO: Customize allowed tools for your stack
+          # Python example:
+          # allowed_tools: "Bash(git:*),Bash(gh:*),Bash(python:*),Bash(pip:*),Bash(pytest:*),Bash(python -m pytest:*)"
+          # Node.js example:
+          # allowed_tools: "Bash(git:*),Bash(gh:*),Bash(node:*),Bash(npm:*),Bash(npx:*)"
+          allowed_tools: "Bash(git:*),Bash(gh:*)"
+
+      - name: Push uncommitted changes
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          # Safety net: Claude sometimes edits files but doesn't commit/push,
+          # causing all work to be lost when the ephemeral runner shuts down.
+
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+
+          BRANCH=$(git branch --show-current)
+          echo "Current branch: $BRANCH"
+
+          # Push any committed-but-unpushed changes
+          UNPUSHED=$(git log "origin/${BRANCH}..HEAD" --oneline 2>/dev/null || echo "")
+          if [ -n "$UNPUSHED" ]; then
+            echo "WARNING: Claude has unpushed commits:"
+            echo "$UNPUSHED"
+            git push origin HEAD
+            echo "Pushed committed-but-unpushed changes to $BRANCH"
+          fi
+
+          # Commit and push any uncommitted changes
+          CHANGES=$(git status --porcelain | grep -v '^?? output.txt$' || true)
+          if [ -z "$CHANGES" ]; then
+            echo "No uncommitted changes — Claude pushed properly"
+            exit 0
+          fi
+
+          echo "WARNING: Claude left uncommitted changes:"
+          echo "$CHANGES"
+
+          git add -u
+          git diff --cached --stat
+          if [ -z "$(git diff --cached --name-only)" ]; then
+            echo "No staged changes after filtering — skipping commit"
+            exit 0
+          fi
+
+          git commit -m "Auto-commit: save Claude's unpushed changes
+
+          Claude edited files but did not commit/push before the session ended.
+          This auto-commit preserves the work so it isn't lost.
+
+          Co-authored-by: Claude <noreply@anthropic.com>"
+          git push origin HEAD
+          echo "Auto-pushed uncommitted changes to $BRANCH"
+
+      - name: Resolve bot review threads
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Resolve all unresolved review threads after Claude addresses feedback
+
+          PR_NUM=""
+          if [ -n "${{ github.event.pull_request.number }}" ]; then
+            PR_NUM=${{ github.event.pull_request.number }}
+          elif [ -n "${{ github.event.issue.number }}" ]; then
+            HAS_PR=$(gh api "repos/$REPO/issues/${{ github.event.issue.number }}" \
+              --jq '.pull_request.url // empty' 2>/dev/null || echo "")
+            if [ -n "$HAS_PR" ]; then
+              PR_NUM=${{ github.event.issue.number }}
+            fi
+          fi
+
+          if [ -z "$PR_NUM" ]; then
+            echo "Not a PR context — skipping thread resolution"
+            exit 0
+          fi
+
+          echo "Resolving review threads on PR #$PR_NUM"
+
+          OWNER=$(echo "$REPO" | cut -d/ -f1)
+          NAME=$(echo "$REPO" | cut -d/ -f2)
+
+          THREAD_IDS=$(gh api graphql -f query="
+            query {
+              repository(owner: \"$OWNER\", name: \"$NAME\") {
+                pullRequest(number: $PR_NUM) {
+                  reviewThreads(first: 100) {
+                    nodes { id isResolved }
+                  }
+                }
+              }
+            }
+          " --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false) | .id' 2>/dev/null || echo "")
+
+          if [ -z "$THREAD_IDS" ]; then
+            echo "No unresolved review threads"
+            exit 0
+          fi
+
+          echo "$THREAD_IDS" | while read -r TID; do
+            if [ -n "$TID" ]; then
+              gh api graphql -f query="
+                mutation {
+                  resolveReviewThread(input: {threadId: \"$TID\"}) {
+                    thread { isResolved }
+                  }
+                }
+              " 2>/dev/null && echo "Resolved thread $TID" || echo "Failed to resolve thread $TID"
+            fi
+          done
+          echo "Resolved review threads on PR #$PR_NUM"
+
+      - name: Auto-create PR if branch has commits
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          BRANCH=$(echo "${{ steps.claude.outputs.branch_name }}" | xargs)
+          if [ -z "$BRANCH" ]; then
+            echo "No branch created — skipping PR"
+            exit 0
+          fi
+
+          AHEAD=$(git rev-list --count origin/master.."origin/$BRANCH" 2>/dev/null || echo "0")
+          if [ "$AHEAD" -eq 0 ]; then
+            echo "Branch $BRANCH has no commits ahead of master — skipping PR"
+            exit 0
+          fi
+
+          EXISTING=$(gh pr list --head "$BRANCH" --state open --json number -q '.[0].number' 2>/dev/null || true)
+          if [ -n "$EXISTING" ]; then
+            echo "PR #$EXISTING already exists for $BRANCH"
+            exit 0
+          fi
+
+          ISSUE_NUM=$(echo "$BRANCH" | grep -oP 'issue-\K\d+' || true)
+
+          if [ -n "$ISSUE_NUM" ]; then
+            ISSUE_TITLE=$(gh issue view "$ISSUE_NUM" --json title -q '.title' 2>/dev/null || echo "")
+            PR_TITLE="${ISSUE_TITLE:-Implement issue #$ISSUE_NUM}"
+            PR_BODY="Closes #${ISSUE_NUM}
+
+          Autonomously implemented by Claude Code via GitHub Actions.
+
+          Generated with [Claude Code](https://claude.ai/code)"
+          else
+            PR_TITLE="Changes from Claude Code"
+            PR_BODY="Autonomously implemented by Claude Code via GitHub Actions."
+          fi
+
+          gh pr create \
+            --head "$BRANCH" \
+            --base master \
+            --title "$PR_TITLE" \
+            --body "$PR_BODY"
+
+          echo "PR created for branch $BRANCH"
+
+      - name: Enable auto-merge on PR
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          BRANCH=$(echo "${{ steps.claude.outputs.branch_name }}" | xargs)
+          if [ -z "$BRANCH" ]; then
+            exit 0
+          fi
+
+          PR_NUM=$(gh pr list --head "$BRANCH" --state open --json number -q '.[0].number' 2>/dev/null || true)
+          if [ -z "$PR_NUM" ]; then
+            exit 0
+          fi
+
+          gh pr merge "$PR_NUM" --squash --auto 2>/dev/null || echo "Auto-merge not available (may need branch protection or admin settings)"
