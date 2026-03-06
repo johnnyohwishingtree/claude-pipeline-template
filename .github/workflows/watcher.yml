@@ -272,5 +272,55 @@ jobs:
             SLOTS_AVAILABLE=$((SLOTS_AVAILABLE - 1))
           done
 
+          # 5. Close orphan claude/ PRs with no linked story
+          echo ""
+          echo "--- Checking for orphan PRs ---"
+          ORPHAN_PRS=$(gh pr list --repo "$REPO" --state open --json number,headRefName,body,createdAt \
+            -q '[.[] | select(.headRefName | startswith("claude/"))]' 2>/dev/null || echo "[]")
+
+          for row in $(echo "$ORPHAN_PRS" | jq -c '.[]'); do
+            PR_NUM=$(echo "$row" | jq -r '.number')
+            PR_BODY=$(echo "$row" | jq -r '.body')
+            PR_CREATED=$(echo "$row" | jq -r '.createdAt')
+
+            # Check if PR links to a story via "Closes #N"
+            LINKED_ISSUE=$(echo "$PR_BODY" | grep -oE '(Closes|Fixes|Resolves)\s+#[0-9]+' | grep -oE '[0-9]+' | head -1 || true)
+
+            if [ -n "$LINKED_ISSUE" ]; then
+              echo "PR #$PR_NUM links to issue #$LINKED_ISSUE — not orphan"
+              continue
+            fi
+
+            # Check age
+            PR_AGE=$(minutes_ago "$PR_CREATED")
+            echo "PR #$PR_NUM has no linked story, age: ${PR_AGE}m"
+
+            if [ "$PR_AGE" -lt "$GRACE_MINUTES" ]; then
+              echo "  Too new — skipping (may still be getting set up)"
+              continue
+            fi
+
+            # Check for recent activity
+            LAST_COMMENT=$(gh pr view "$PR_NUM" --repo "$REPO" --json comments \
+              -q '.comments | last | .createdAt' 2>/dev/null || echo "")
+            if [ -n "$LAST_COMMENT" ]; then
+              COMMENT_AGO=$(minutes_ago "$LAST_COMMENT")
+              if [ "$COMMENT_AGO" -lt "$GRACE_MINUTES" ]; then
+                echo "  Recent activity (${COMMENT_AGO}m ago) — skipping"
+                continue
+              fi
+            fi
+
+            echo "  Closing orphan PR #$PR_NUM"
+            gh pr close "$PR_NUM" --repo "$REPO" \
+              --comment "Closing: this PR has no linked story issue (\`Closes #N\`) and appears to be orphaned. If this work is still needed, reopen and add a \`Closes #N\` reference." \
+              2>/dev/null || true
+
+            # Delete the branch
+            PR_BRANCH=$(echo "$row" | jq -r '.headRefName')
+            gh api "repos/$REPO/git/refs/heads/$PR_BRANCH" --method DELETE 2>/dev/null || true
+            echo "  Deleted branch $PR_BRANCH"
+          done
+
           echo ""
           echo "=== Watcher complete — slots used: $((MAX_CONCURRENT - SLOTS_AVAILABLE))/$MAX_CONCURRENT ==="

@@ -197,7 +197,18 @@ jobs:
             exit 0
           fi
 
-          ISSUE_NUM=$(echo "$BRANCH" | grep -oP 'issue-\K\d+' || true)
+          # Extract issue number from branch name
+          # Handles: claude/issue-6-*, claude/issue-6, issue-6-*, or just a number
+          ISSUE_NUM=$(echo "$BRANCH" | grep -oE 'issue-[0-9]+' | grep -oE '[0-9]+' || true)
+
+          # If triggered from an issue comment, use that issue number
+          if [ -z "$ISSUE_NUM" ] && [ -n "${{ github.event.issue.number }}" ]; then
+            IS_PR=$(gh api "repos/${{ github.repository }}/issues/${{ github.event.issue.number }}" \
+              --jq '.pull_request.url // empty' 2>/dev/null || echo "")
+            if [ -z "$IS_PR" ]; then
+              ISSUE_NUM=${{ github.event.issue.number }}
+            fi
+          fi
 
           if [ -n "$ISSUE_NUM" ]; then
             ISSUE_TITLE=$(gh issue view "$ISSUE_NUM" --json title -q '.title' 2>/dev/null || echo "")
