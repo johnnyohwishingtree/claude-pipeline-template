@@ -30,6 +30,14 @@ jobs:
         run: |
           PR_NUM=${{ github.event.pull_request.number }}
 
+          # Skip merged/closed PRs — nothing to fix
+          PR_STATE=$(gh pr view "$PR_NUM" --repo ${{ github.repository }} --json state -q '.state')
+          if [ "$PR_STATE" != "OPEN" ]; then
+            echo "PR #$PR_NUM is $PR_STATE — skipping relay"
+            echo "should_relay=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
           # Only relay bot reviews — add your bot reviewers here
           BOTS="gemini-code-assist[bot] copilot[bot]"
           IS_BOT=false
