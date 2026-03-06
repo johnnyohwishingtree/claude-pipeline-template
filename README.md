@@ -41,12 +41,46 @@ Go to **Settings > Secrets and variables > Actions** and add:
 5. **Edit `.github/ISSUE_TEMPLATE/story.yml`** — Update the skill dropdown to match your skills
 6. **Edit `.claude/skills/`** — Customize or add skills relevant to your project
 
-### 4. Enable required GitHub settings
+### 4. Configure repository settings
 
-- **Settings > General > Pull Requests** — Enable "Allow auto-merge"
-- **Settings > Branches** — Add a branch protection rule for `main`/`master`:
-  - Require status checks to pass (select "test")
-  - This enables auto-merge to work correctly
+The pipeline requires specific repo settings to function correctly. Run the setup script:
+
+```bash
+./scripts/setup-repo.sh owner/repo-name
+```
+
+This configures:
+
+| Setting | Why it's needed |
+|---------|----------------|
+| **Allow auto-merge** | PRs merge automatically after checks pass |
+| **Delete branch on merge** | Cleans up `claude/*` branches after merge |
+| **Require pull requests** | Prevents direct pushes to master |
+| **Require `test` status check** | PRs can't merge with failing CI |
+| **Require review thread resolution** | All review comments must be resolved before merge |
+| **Block branch deletion/force push** | Protects the default branch |
+| **Required labels** | Creates `pending`, `in-progress`, `completed`, `pipeline-stuck`, `epic`, `story` labels |
+
+<details>
+<summary>Manual setup (if you prefer not to use the script)</summary>
+
+**Repo settings** (Settings > General > Pull Requests):
+- Enable "Allow auto-merge"
+- Enable "Automatically delete head branches"
+
+**Branch ruleset** (Settings > Rules > Rulesets > New ruleset):
+- Name: `No Human Merge to main`
+- Target: Default branch
+- Rules:
+  - Restrict deletions
+  - Block force pushes
+  - Require pull request: 0 approvals, require conversation resolution
+  - Require status checks: `test`
+
+**Labels** (Issues > Labels):
+Create: `pending`, `in-progress`, `completed`, `pipeline-stuck`, `epic`, `story`
+
+</details>
 
 ### 5. Start the pipeline
 
