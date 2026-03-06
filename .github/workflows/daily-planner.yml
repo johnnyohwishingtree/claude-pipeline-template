@@ -7,7 +7,12 @@ on:
     # TODO: Adjust schedule for your timezone and preferences
     - cron: '0 */5 * * 0,6'  # Every 5 hours on Saturday and Sunday (UTC)
     - cron: '0 1,2 * * 1'    # Monday 01:00 and 02:00 UTC (still Sunday PT)
-  workflow_dispatch:           # Manual override — works anytime
+  workflow_dispatch:
+    inputs:
+      topic:
+        description: 'Optional topic/direction for the epic (leave blank to let Claude decide)'
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -122,8 +127,11 @@ jobs:
           allowed_tools: "Bash(gh:*)"
           direct_prompt: |
             You are a technical product manager for this project. Your job is to
-            identify the single most impactful improvement to make next and create
-            a GitHub epic with stories that the autonomous pipeline can execute.
+            create a GitHub epic with stories that the autonomous pipeline can execute.
+
+            ## Requested Topic
+
+            ${{ github.event.inputs.topic || 'No specific topic requested — choose the single most impactful improvement to make next based on the current state of the project.' }}
 
             ## Step 1: Understand the project
 
