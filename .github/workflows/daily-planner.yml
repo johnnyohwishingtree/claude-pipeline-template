@@ -121,6 +121,7 @@ jobs:
         id: refresh
         env:
           REFRESH_TOKEN: ${{ secrets.CLAUDE_REFRESH_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           RESPONSE=$(curl -s -X POST "https://platform.claude.com/v1/oauth/token" \
             -H "Content-Type: application/x-www-form-urlencoded" \
@@ -131,6 +132,14 @@ jobs:
             echo "::error::Failed to refresh OAuth token"
             echo "$RESPONSE" | jq . 2>/dev/null || echo "$RESPONSE"
             exit 1
+          fi
+
+          # Persist the rotated refresh token for next run
+          NEW_REFRESH=$(echo "$RESPONSE" | jq -r '.refresh_token // empty')
+          if [ -n "$NEW_REFRESH" ]; then
+            echo "::add-mask::$NEW_REFRESH"
+            gh secret set CLAUDE_REFRESH_TOKEN --repo "${{ github.repository }}" --body "$NEW_REFRESH"
+            echo "Refresh token rotated and saved"
           fi
 
           echo "::add-mask::$ACCESS_TOKEN"
