@@ -275,13 +275,17 @@ jobs:
           # 5. Close orphan claude/ PRs with no linked story
           echo ""
           echo "--- Checking for orphan PRs ---"
-          ORPHAN_PRS=$(gh pr list --repo "$REPO" --state open --json number,headRefName,body,createdAt \
+          # Fetch only scalar fields (no body — it contains newlines that break parsing)
+          ORPHAN_PRS=$(gh pr list --repo "$REPO" --state open --json number,headRefName,createdAt \
             -q '[.[] | select(.headRefName | startswith("claude/"))]' 2>/dev/null || echo "[]")
 
-          for row in $(echo "$ORPHAN_PRS" | jq -c '.[]'); do
+          echo "$ORPHAN_PRS" | jq -c '.[]' | while IFS= read -r row; do
             PR_NUM=$(echo "$row" | jq -r '.number')
-            PR_BODY=$(echo "$row" | jq -r '.body')
+            PR_BRANCH=$(echo "$row" | jq -r '.headRefName')
             PR_CREATED=$(echo "$row" | jq -r '.createdAt')
+
+            # Fetch body separately to avoid newline issues
+            PR_BODY=$(gh pr view "$PR_NUM" --repo "$REPO" --json body -q '.body' 2>/dev/null || echo "")
 
             # Check if PR links to a story via "Closes #N"
             LINKED_ISSUE=$(echo "$PR_BODY" | grep -oE '(Closes|Fixes|Resolves)\s+#[0-9]+' | grep -oE '[0-9]+' | head -1 || true)
@@ -291,7 +295,6 @@ jobs:
               continue
             fi
 
-            # Check age
             PR_AGE=$(minutes_ago "$PR_CREATED")
             echo "PR #$PR_NUM has no linked story, age: ${PR_AGE}m"
 
@@ -316,8 +319,6 @@ jobs:
               --comment "Closing: this PR has no linked story issue (\`Closes #N\`) and appears to be orphaned. If this work is still needed, reopen and add a \`Closes #N\` reference." \
               2>/dev/null || true
 
-            # Delete the branch
-            PR_BRANCH=$(echo "$row" | jq -r '.headRefName')
             gh api "repos/$REPO/git/refs/heads/$PR_BRANCH" --method DELETE 2>/dev/null || true
             echo "  Deleted branch $PR_BRANCH"
           done
