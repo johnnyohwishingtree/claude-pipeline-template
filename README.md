@@ -29,8 +29,38 @@ Go to **Settings > Secrets and variables > Actions** and add:
 
 | Secret | Description |
 |--------|-------------|
-| `CLAUDE_CODE_OAUTH_TOKEN` | From [Claude Code](https://claude.ai/code) — enables the Claude Code Action |
+| `CLAUDE_CODE_OAUTH_TOKEN` | OAuth access token from Claude Code (see setup instructions below) |
+| `CLAUDE_REFRESH_TOKEN` | OAuth refresh token — keeps the access token alive long-term |
+| `CLAUDE_EXPIRES_AT` | Token expiration timestamp (milliseconds since epoch) |
 | `GH_PAT` | GitHub Personal Access Token with `repo`, `issues`, `pull-requests` scopes |
+
+<details>
+<summary><strong>How to get the Claude tokens</strong></summary>
+
+Claude Code stores OAuth credentials in your macOS Keychain when you sign in locally. To extract and set all three secrets at once:
+
+```bash
+# Make sure you're logged in to Claude Code first
+claude auth status
+
+# Extract and store all three secrets for your repo
+CREDS=$(security find-generic-password -s "Claude Code-credentials" -a "$(whoami)" -w)
+
+echo "$CREDS" | python3 -c "import sys,json; print(json.load(sys.stdin)['claudeAiOauth']['accessToken'])" \
+  | gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo OWNER/REPO
+
+echo "$CREDS" | python3 -c "import sys,json; print(json.load(sys.stdin)['claudeAiOauth']['refreshToken'])" \
+  | gh secret set CLAUDE_REFRESH_TOKEN --repo OWNER/REPO
+
+echo "$CREDS" | python3 -c "import sys,json; print(json.load(sys.stdin)['claudeAiOauth']['expiresAt'])" \
+  | gh secret set CLAUDE_EXPIRES_AT --repo OWNER/REPO
+```
+
+Replace `OWNER/REPO` with your repository (e.g. `myuser/myproject`).
+
+**Why three secrets?** The access token expires within hours. The refresh token allows the pipeline to automatically obtain new access tokens, keeping the pipeline running indefinitely without manual re-auth.
+
+</details>
 
 ### 3. Customize for your project
 
