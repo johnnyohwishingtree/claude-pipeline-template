@@ -6,128 +6,123 @@ on:
   pull_request_review_comment:
     types: [created]
 
+# Scope concurrency by comment author so bot status comments
+# (e.g. claude[bot]'s "working…") get their own group and never
+# cancel or queue behind the real human-triggered run.
+concurrency:
+  group: claude-${{ github.event.issue.number || github.event.pull_request.number }}-${{ github.event.comment.user.login }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  id-token: write
+  actions: write
+
 jobs:
   claude:
     if: |
       contains(github.event.comment.body, '@claude') &&
+      github.event.comment.user.type != 'Bot' &&
       (github.event.issue != null || github.event.pull_request != null)
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
-      issues: write
-      id-token: write
+    timeout-minutes: 30
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Switch to PR branch if applicable
-        if: github.event.issue.pull_request
+      - name: Create or switch to working branch
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          PR_NUM=${{ github.event.issue.number }}
-          PR_BRANCH=$(gh pr view "$PR_NUM" --json headRefName -q '.headRefName')
-          echo "Switching to PR branch: $PR_BRANCH"
-          git checkout "$PR_BRANCH"
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
 
-      # TODO: Set up your language runtime and install dependencies
-      # Examples for common stacks:
+          if [ -n "${{ github.event.issue.pull_request }}" ]; then
+            # PR context — switch to the existing PR branch
+            PR_NUM=${{ github.event.issue.number }}
+            PR_BRANCH=$(gh pr view "$PR_NUM" --json headRefName -q '.headRefName')
+            echo "Switching to PR branch: $PR_BRANCH"
+            git checkout "$PR_BRANCH"
+          else
+            # Issue context — create a dedicated branch for this work
+            ISSUE_NUM=${{ github.event.issue.number }}
+            BRANCH="claude/issue-${ISSUE_NUM}"
+
+            if git ls-remote --heads origin "$BRANCH" | grep -q "$BRANCH"; then
+              echo "Branch $BRANCH already exists — checking out"
+              git checkout "$BRANCH"
+            else
+              echo "Creating new branch: $BRANCH"
+              git checkout -b "$BRANCH"
+              git push -u origin "$BRANCH"
+            fi
+          fi
+
+      # TODO: Set up your language runtime and install dependencies here.
+      # Examples:
       #
-      # Python:
-      # - name: Set up Python
-      #   uses: actions/setup-python@v5
-      #   with:
-      #     python-version: '3.11'
-      #     cache: 'pip'
-      # - name: Install dependencies
-      #   run: pip install -r requirements.txt
-      #
-      # Node.js:
       # - name: Set up Node.js
       #   uses: actions/setup-node@v4
       #   with:
       #     node-version: '20'
-      #     cache: 'npm'
       # - name: Install dependencies
       #   run: npm ci
-
+      #
+      # - name: Set up Python
+      #   uses: actions/setup-python@v5
+      #   with:
+      #     python-version: '3.12'
+      # - name: Install dependencies
+      #   run: pip install -r requirements.txt
 
       - name: Run Claude Code
         id: claude
-        uses: anthropics/claude-code-action@beta
+        uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          max_turns: 100
           # TODO: Customize allowed tools for your stack
-          # Python example:
-          # allowed_tools: "Bash(git:*),Bash(gh:*),Bash(python:*),Bash(pip:*),Bash(pytest:*),Bash(python -m pytest:*)"
-          # Node.js example:
-          # allowed_tools: "Bash(git:*),Bash(gh:*),Bash(node:*),Bash(npm:*),Bash(npx:*)"
           allowed_tools: "Bash(git:*),Bash(gh:*)"
 
-      - name: Push uncommitted changes
-        if: always()
+      - name: Push to temporary branch
+        id: push
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          # Safety net: Claude sometimes edits files but doesn't commit/push,
-          # causing all work to be lost when the ephemeral runner shuts down.
-
           git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
 
-          BRANCH=$(git branch --show-current)
-          echo "Current branch: $BRANCH"
+          # Remember the working branch (PR branch or claude/issue-N)
+          SOURCE_BRANCH=$(git branch --show-current)
+          echo "source_branch=$SOURCE_BRANCH" >> $GITHUB_OUTPUT
 
-          # Push any committed-but-unpushed changes
-          UNPUSHED=$(git log "origin/${BRANCH}..HEAD" --oneline 2>/dev/null || echo "")
-          if [ -n "$UNPUSHED" ]; then
-            echo "WARNING: Claude has unpushed commits:"
-            echo "$UNPUSHED"
-            git push origin HEAD
-            echo "Pushed committed-but-unpushed changes to $BRANCH"
-          fi
-
-          # Commit and push any uncommitted changes
+          # Commit any uncommitted changes (safety net)
           CHANGES=$(git status --porcelain | grep -v '^?? output.txt$' || true)
-          if [ -z "$CHANGES" ]; then
-            echo "No uncommitted changes — Claude pushed properly"
-            exit 0
-          fi
-
-          echo "WARNING: Claude left uncommitted changes:"
-          echo "$CHANGES"
-
-          git add -u
-          git diff --cached --stat
-          if [ -z "$(git diff --cached --name-only)" ]; then
-            echo "No staged changes after filtering — skipping commit"
-            exit 0
-          fi
-
-          git commit -m "Auto-commit: save Claude's unpushed changes
-
-          Claude edited files but did not commit/push before the session ended.
-          This auto-commit preserves the work so it isn't lost.
+          if [ -n "$CHANGES" ]; then
+            git add -u
+            if [ -n "$(git diff --cached --name-only)" ]; then
+              git commit -m "chore: save unpushed changes from Claude
 
           Co-authored-by: Claude <noreply@anthropic.com>"
-          git push origin HEAD
-          echo "Auto-pushed uncommitted changes to $BRANCH"
+            fi
+          fi
+
+          # Create temp branch and push
+          TMP_BRANCH="tmp/claude-${{ github.run_id }}"
+          echo "tmp_branch=$TMP_BRANCH" >> $GITHUB_OUTPUT
+          git checkout -b "$TMP_BRANCH"
+          git push -u origin "$TMP_BRANCH"
+          echo "Pushed to $TMP_BRANCH"
 
       - name: Resolve bot review threads
-        if: always()
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
           REPO: ${{ github.repository }}
         run: |
-          # Resolve all unresolved review threads after Claude addresses feedback
-
           PR_NUM=""
-          if [ -n "${{ github.event.pull_request.number }}" ]; then
-            PR_NUM=${{ github.event.pull_request.number }}
-          elif [ -n "${{ github.event.issue.number }}" ]; then
+          if [ -n "${{ github.event.issue.number }}" ]; then
             HAS_PR=$(gh api "repos/$REPO/issues/${{ github.event.issue.number }}" \
               --jq '.pull_request.url // empty' 2>/dev/null || echo "")
             if [ -n "$HAS_PR" ]; then
@@ -141,7 +136,6 @@ jobs:
           fi
 
           echo "Resolving review threads on PR #$PR_NUM"
-
           OWNER=$(echo "$REPO" | cut -d/ -f1)
           NAME=$(echo "$REPO" | cut -d/ -f2)
 
@@ -170,39 +164,22 @@ jobs:
                     thread { isResolved }
                   }
                 }
-              " 2>/dev/null && echo "Resolved thread $TID" || echo "Failed to resolve thread $TID"
+              " 2>/dev/null && echo "Resolved thread $TID" || echo "Failed to resolve $TID"
             fi
           done
-          echo "Resolved review threads on PR #$PR_NUM"
 
-      - name: Auto-create PR if branch has commits
-        if: always()
+      - name: Extract issue number
+        id: issue
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          BRANCH=$(echo "${{ steps.claude.outputs.branch_name }}" | xargs)
-          if [ -z "$BRANCH" ]; then
-            echo "No branch created — skipping PR"
-            exit 0
-          fi
+          ISSUE_NUM=""
+          SOURCE="${{ steps.push.outputs.source_branch }}"
 
-          AHEAD=$(git rev-list --count origin/master.."origin/$BRANCH" 2>/dev/null || echo "0")
-          if [ "$AHEAD" -eq 0 ]; then
-            echo "Branch $BRANCH has no commits ahead of master — skipping PR"
-            exit 0
-          fi
+          # Try branch name first (claude/issue-123)
+          ISSUE_NUM=$(echo "$SOURCE" | grep -oE 'issue-[0-9]+' | grep -oE '[0-9]+' || true)
 
-          EXISTING=$(gh pr list --head "$BRANCH" --state open --json number -q '.[0].number' 2>/dev/null || true)
-          if [ -n "$EXISTING" ]; then
-            echo "PR #$EXISTING already exists for $BRANCH"
-            exit 0
-          fi
-
-          # Extract issue number from branch name
-          # Handles: claude/issue-6-*, claude/issue-6, issue-6-*, or just a number
-          ISSUE_NUM=$(echo "$BRANCH" | grep -oE 'issue-[0-9]+' | grep -oE '[0-9]+' || true)
-
-          # If triggered from an issue comment, use that issue number
+          # Fall back to comment context (if commenting on an issue, not a PR)
           if [ -z "$ISSUE_NUM" ] && [ -n "${{ github.event.issue.number }}" ]; then
             IS_PR=$(gh api "repos/${{ github.repository }}/issues/${{ github.event.issue.number }}" \
               --jq '.pull_request.url // empty' 2>/dev/null || echo "")
@@ -211,40 +188,22 @@ jobs:
             fi
           fi
 
-          if [ -n "$ISSUE_NUM" ]; then
-            ISSUE_TITLE=$(gh issue view "$ISSUE_NUM" --json title -q '.title' 2>/dev/null || echo "")
-            PR_TITLE="${ISSUE_TITLE:-Implement issue #$ISSUE_NUM}"
-            PR_BODY="Closes #${ISSUE_NUM}
+          echo "number=$ISSUE_NUM" >> $GITHUB_OUTPUT
 
-          Autonomously implemented by Claude Code via GitHub Actions.
-
-          Generated with [Claude Code](https://claude.ai/code)"
-          else
-            PR_TITLE="Changes from Claude Code"
-            PR_BODY="Autonomously implemented by Claude Code via GitHub Actions."
-          fi
-
-          gh pr create \
-            --head "$BRANCH" \
-            --base master \
-            --title "$PR_TITLE" \
-            --body "$PR_BODY"
-
-          echo "PR created for branch $BRANCH"
-
-      - name: Enable auto-merge on PR
-        if: always()
+      - name: Trigger verify-merge
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          BRANCH=$(echo "${{ steps.claude.outputs.branch_name }}" | xargs)
-          if [ -z "$BRANCH" ]; then
-            exit 0
-          fi
+          TMP_BRANCH="${{ steps.push.outputs.tmp_branch }}"
+          SOURCE_BRANCH="${{ steps.push.outputs.source_branch }}"
+          ISSUE_NUM="${{ steps.issue.outputs.number }}"
 
-          PR_NUM=$(gh pr list --head "$BRANCH" --state open --json number -q '.[0].number' 2>/dev/null || true)
-          if [ -z "$PR_NUM" ]; then
-            exit 0
-          fi
+          gh workflow run verify-merge.yml \
+            --repo "${{ github.repository }}" \
+            --ref "${{ github.event.repository.default_branch }}" \
+            -f tmp_branch="$TMP_BRANCH" \
+            -f target_branch="$SOURCE_BRANCH" \
+            -f issue_number="${ISSUE_NUM:-}" \
+            -f attempt="1"
 
-          gh pr merge "$PR_NUM" --squash --auto 2>/dev/null || echo "Auto-merge not available (may need branch protection or admin settings)"
+          echo "Triggered verify-merge for $TMP_BRANCH -> $SOURCE_BRANCH"
