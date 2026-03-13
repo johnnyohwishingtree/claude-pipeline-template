@@ -1,0 +1,260 @@
+name: Verify and Merge
+
+# Checks out a temporary branch, runs tests.
+# If pass: merges into the target branch, cleans up temp branch, creates PR.
+# If fail: Claude fixes (fresh context), pushes, re-triggers itself.
+# Max 3 attempts to prevent infinite loops.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tmp_branch:
+        description: 'Temporary branch with Claude work'
+        required: true
+        type: string
+      target_branch:
+        description: 'Target branch to merge into (PR branch)'
+        required: true
+        type: string
+      issue_number:
+        description: 'Related issue number'
+        required: false
+        type: string
+      attempt:
+        description: 'Current attempt number (1-3)'
+        required: false
+        type: string
+        default: '1'
+
+concurrency:
+  group: verify-merge-${{ inputs.tmp_branch }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  id-token: write
+  actions: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      pass: ${{ steps.checks.outputs.pass }}
+
+    steps:
+      - name: Checkout temp branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tmp_branch }}
+          fetch-depth: 0
+
+      # TODO: Set up your language runtime and install dependencies here.
+      # Must match the setup in claude.yml and test.yml.
+
+      - name: Run checks
+        id: checks
+        run: |
+          PASS=true
+
+          # TODO: Replace with your test/lint/typecheck commands
+          echo "=== Tests ==="
+          echo "No test command configured — edit verify-merge.yml"
+          # Example:
+          # if ! npm test 2>&1; then
+          #   echo "Tests FAILED"
+          #   PASS=false
+          # fi
+
+          echo "pass=$PASS" >> $GITHUB_OUTPUT
+
+  merge:
+    needs: verify
+    if: needs.verify.outputs.pass == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout target branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target_branch }}
+          fetch-depth: 0
+
+      - name: Merge temp branch into target
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+          git fetch origin "${{ inputs.tmp_branch }}"
+          git merge "origin/${{ inputs.tmp_branch }}" --no-edit
+
+          REMOTE_EXISTS=$(git ls-remote --heads origin "${{ inputs.target_branch }}" 2>/dev/null | wc -l | tr -d ' ')
+          if [ "$REMOTE_EXISTS" -eq 0 ]; then
+            git push -u origin HEAD
+          else
+            git push origin HEAD
+          fi
+
+          echo "Merged ${{ inputs.tmp_branch }} into ${{ inputs.target_branch }}"
+
+      - name: Delete temp branch
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          gh api -X DELETE "repos/${{ github.repository }}/git/refs/heads/${{ inputs.tmp_branch }}" 2>/dev/null \
+            && echo "Deleted ${{ inputs.tmp_branch }}" \
+            || echo "Failed to delete ${{ inputs.tmp_branch }}"
+
+      - name: Create PR if not exists
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
+        run: |
+          TARGET="${{ inputs.target_branch }}"
+          ISSUE_NUM="${{ inputs.issue_number }}"
+
+          EXISTING=$(gh pr list --head "$TARGET" --state open --json number -q '.[0].number' 2>/dev/null || true)
+          if [ -n "$EXISTING" ]; then
+            echo "PR #$EXISTING already exists for $TARGET"
+            exit 0
+          fi
+
+          AHEAD=$(git rev-list --count "origin/${DEFAULT_BRANCH}..origin/$TARGET" 2>/dev/null || echo "0")
+          if [ "$AHEAD" -eq 0 ]; then
+            echo "No commits ahead of $DEFAULT_BRANCH — skipping PR"
+            exit 0
+          fi
+
+          if [ -n "$ISSUE_NUM" ]; then
+            ISSUE_TITLE=$(gh issue view "$ISSUE_NUM" --json title -q '.title' 2>/dev/null || echo "")
+            PR_TITLE="${ISSUE_TITLE:-Implement issue #$ISSUE_NUM}"
+            PR_BODY="Closes #${ISSUE_NUM}
+
+          Autonomously implemented by Claude Code via GitHub Actions.
+
+          Generated with [Claude Code](https://claude.ai/code)"
+          else
+            PR_TITLE="Changes from Claude Code"
+            PR_BODY="Autonomously implemented by Claude Code via GitHub Actions."
+          fi
+
+          gh pr create --head "$TARGET" --base "$DEFAULT_BRANCH" --title "$PR_TITLE" --body "$PR_BODY"
+
+          PR_NUM=$(gh pr list --head "$TARGET" --state open --json number -q '.[0].number' 2>/dev/null || true)
+          if [ -n "$PR_NUM" ]; then
+            gh pr merge "$PR_NUM" --squash --auto 2>/dev/null || echo "Auto-merge not available"
+          fi
+
+  fix:
+    needs: verify
+    if: needs.verify.outputs.pass == 'false' && inputs.attempt != '3'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout temp branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tmp_branch }}
+          fetch-depth: 0
+
+      # TODO: Set up your language runtime and install dependencies here.
+
+      - name: Capture errors
+        run: |
+          # TODO: Replace with your test/lint commands
+          echo "No test command configured" > /tmp/test_errors.txt
+          # Example:
+          # npm test > /tmp/test_errors.txt 2>&1 || true
+          # npm run lint > /tmp/lint_errors.txt 2>&1 || true
+
+      - name: Claude fix (fresh context)
+        uses: anthropics/claude-code-action@v1
+        with:
+          mode: agent
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          max_turns: 30
+          # TODO: Customize allowed tools for your stack
+          allowed_tools: "Edit,MultiEdit,Glob,Grep,LS,Read,Write,Bash(git add:*),Bash(git commit:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*)"
+          direct_prompt: |
+            Fix attempt ${{ inputs.attempt }}/3. Your code has test, lint, or typecheck errors.
+
+            Error logs are at /tmp/ — read them to see what's wrong.
+            Fix the root cause (don't suppress errors with type casts or skips).
+            After fixing, run the test/lint commands to confirm zero errors.
+            Then git add and git commit your changes.
+
+      - name: Push fixes to temp branch
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+
+          CHANGES=$(git status --porcelain | grep -v '^?? output.txt$' || true)
+          if [ -n "$CHANGES" ]; then
+            git add -u
+            if [ -n "$(git diff --cached --name-only)" ]; then
+              git commit -m "fix: resolve test/lint errors (attempt ${{ inputs.attempt }})
+
+          Co-authored-by: Claude <noreply@anthropic.com>"
+            fi
+          fi
+
+          git push origin HEAD
+
+      - name: Trigger next verify-merge attempt
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          NEXT_ATTEMPT=$(( ${{ inputs.attempt }} + 1 ))
+
+          gh workflow run verify-merge.yml \
+            --repo "${{ github.repository }}" \
+            --ref "${{ github.event.repository.default_branch || 'main' }}" \
+            -f tmp_branch="${{ inputs.tmp_branch }}" \
+            -f target_branch="${{ inputs.target_branch }}" \
+            -f issue_number="${{ inputs.issue_number }}" \
+            -f attempt="$NEXT_ATTEMPT"
+
+          echo "Triggered verify-merge attempt $NEXT_ATTEMPT"
+
+  give-up:
+    needs: verify
+    if: needs.verify.outputs.pass == 'false' && inputs.attempt == '3'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Comment on issue about failure
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          ISSUE_NUM="${{ inputs.issue_number }}"
+          TMP_BRANCH="${{ inputs.tmp_branch }}"
+
+          if [ -n "$ISSUE_NUM" ]; then
+            gh issue comment "$ISSUE_NUM" --repo "${{ github.repository }}" --body "$(cat <<EOF
+          Checks failed after 3 fix attempts. Claude's work is on [\`${TMP_BRANCH}\`](https://github.com/${{ github.repository }}/tree/${TMP_BRANCH}).
+
+          To retry: Actions > Verify and Merge > Run workflow with \`tmp_branch: ${TMP_BRANCH}\`, \`target_branch: ${{ inputs.target_branch }}\`, \`attempt: 1\`
+
+          Or comment \`@claude fix the test/lint errors on this branch\` on the issue.
+          EOF
+            )" 2>/dev/null || echo "Failed to post comment"
+          fi
+
+      - name: Clean up stale temp branches
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          CURRENT="${{ inputs.tmp_branch }}"
+          gh api "repos/${{ github.repository }}/git/matching-refs/heads/tmp/" \
+            --jq '.[].ref' 2>/dev/null | sed 's|^refs/heads/||' | while read -r branch; do
+            if [ "$branch" != "$CURRENT" ]; then
+              gh api -X DELETE "repos/${{ github.repository }}/git/refs/heads/$branch" 2>/dev/null \
+                && echo "Cleaned up $branch" || true
+            fi
+          done

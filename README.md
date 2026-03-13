@@ -7,14 +7,16 @@ A GitHub template repository that sets up a fully autonomous AI development pipe
 An end-to-end autonomous development loop:
 
 ```
-Planner (weekends) creates Epic + Stories
-  -> @claude comment triggers Claude Code Action
-    -> Claude implements, commits, pushes, creates PR
-      -> Tests run; if fail, Claude auto-fixes (up to 3 attempts)
-        -> Bot reviewers (Gemini/Copilot) review the PR
-          -> Review relay forwards feedback to Claude
-            -> PR merges -> Orchestrator triggers next story
-              -> Watcher monitors health, re-triggers stuck work
+@claude comment on issue
+  -> Claude implements on claude/issue-N branch
+    -> Pushes to tmp/ branch (no checks yet)
+      -> verify-merge runs tests on tmp/
+        -> Pass: merge tmp/ into claude/issue-N, create PR, auto-merge
+        -> Fail: Claude fixes with fresh context, re-verify (up to 3x)
+  -> PR created
+    -> Bot reviewers (Gemini/Copilot) review the PR
+      -> review-relay forwards feedback to Claude
+    -> PR merges -> orchestrator triggers next story
 ```
 
 ## Quick Start
@@ -29,51 +31,39 @@ Go to **Settings > Secrets and variables > Actions** and add:
 
 | Secret | Description |
 |--------|-------------|
-| `CLAUDE_CODE_OAUTH_TOKEN` | OAuth access token from Claude Code (see setup instructions below) |
-| `CLAUDE_REFRESH_TOKEN` | OAuth refresh token — keeps the access token alive long-term |
-| `CLAUDE_EXPIRES_AT` | Token expiration timestamp (milliseconds since epoch) |
+| `CLAUDE_CODE_OAUTH_TOKEN` | OAuth token from Claude Code |
 | `GH_PAT` | GitHub Personal Access Token with `repo`, `issues`, `pull-requests` scopes |
 
 <details>
-<summary><strong>How to get the Claude tokens</strong></summary>
-
-Claude Code stores OAuth credentials in your macOS Keychain when you sign in locally. To extract and set all three secrets at once:
+<summary><strong>How to get the Claude token</strong></summary>
 
 ```bash
 # Make sure you're logged in to Claude Code first
 claude auth status
 
-# Extract and store all three secrets for your repo
+# Extract and store the token
 CREDS=$(security find-generic-password -s "Claude Code-credentials" -a "$(whoami)" -w)
 
 echo "$CREDS" | python3 -c "import sys,json; print(json.load(sys.stdin)['claudeAiOauth']['accessToken'])" \
   | gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo OWNER/REPO
-
-echo "$CREDS" | python3 -c "import sys,json; print(json.load(sys.stdin)['claudeAiOauth']['refreshToken'])" \
-  | gh secret set CLAUDE_REFRESH_TOKEN --repo OWNER/REPO
-
-echo "$CREDS" | python3 -c "import sys,json; print(json.load(sys.stdin)['claudeAiOauth']['expiresAt'])" \
-  | gh secret set CLAUDE_EXPIRES_AT --repo OWNER/REPO
 ```
 
 Replace `OWNER/REPO` with your repository (e.g. `myuser/myproject`).
-
-**Why three secrets?** The access token expires within hours. The refresh token allows the pipeline to automatically obtain new access tokens, keeping the pipeline running indefinitely without manual re-auth.
 
 </details>
 
 ### 3. Customize for your project
 
 1. **Edit `CLAUDE.md`** — Replace the skeleton with your project's context, architecture, and conventions
-2. **Edit `.github/workflows/test.yml`** — Update the language, dependencies, and test command for your stack
-3. **Edit `.github/workflows/claude.yml`** — Update `pip install` to match your dependencies
-4. **Edit `.github/workflows/daily-planner.yml`** — Customize the improvement categories for your project
-5. **Edit `.github/ISSUE_TEMPLATE/story.yml`** — Update the skill dropdown to match your skills
-6. **Edit `.claude/skills/`** — Customize or add skills relevant to your project
+2. **Edit workflow TODO sections** — Update language runtime, dependencies, and test commands in:
+   - `.github/workflows/claude.yml` (setup + allowed tools)
+   - `.github/workflows/verify-merge.yml` (setup + test commands)
+   - `.github/workflows/test.yml` (setup + test commands)
+3. **Edit `.claude/skills/`** — Customize or add skills relevant to your project
 
 ### 4. Configure repository settings
 
-The pipeline requires specific repo settings to function correctly. Run the setup script:
+Run the setup script:
 
 ```bash
 ./scripts/setup-repo.sh owner/repo-name
@@ -85,11 +75,10 @@ This configures:
 |---------|----------------|
 | **Allow auto-merge** | PRs merge automatically after checks pass |
 | **Delete branch on merge** | Cleans up `claude/*` branches after merge |
-| **Require pull requests** | Prevents direct pushes to master |
+| **Require pull requests** | Prevents direct pushes to the default branch |
 | **Require `test` status check** | PRs can't merge with failing CI |
 | **Require review thread resolution** | All review comments must be resolved before merge |
-| **Block branch deletion/force push** | Protects the default branch |
-| **Required labels** | Creates `pending`, `in-progress`, `completed`, `pipeline-stuck`, `epic`, `story` labels |
+| **Pipeline labels** | `pending`, `in-progress`, `completed`, `pipeline-stuck`, `epic`, `story` |
 
 <details>
 <summary>Manual setup (if you prefer not to use the script)</summary>
@@ -115,34 +104,54 @@ Create: `pending`, `in-progress`, `completed`, `pipeline-stuck`, `epic`, `story`
 ### 5. Start the pipeline
 
 Either:
-- **Manual:** Create an issue with `epic` + `story` labels and comment `@claude` on it
+- **Manual:** Create an issue and comment `@claude` on it
+- **Epic pipeline:** Use `/epic-planner` to create an epic with stories, then comment `@claude` on the first story
 - **Automatic:** Trigger the planner via Actions > Planner > Run workflow
+
+## How It Works
+
+### The temp branch pattern
+
+Claude never pushes directly to the PR branch. Instead:
+
+1. **`claude.yml`** — Claude works on `claude/issue-N` branch, then pushes to `tmp/claude-<run_id>`
+2. **`verify-merge.yml`** — Runs tests on the temp branch:
+   - **Pass:** Merges temp into `claude/issue-N`, deletes temp, creates PR with auto-merge
+   - **Fail:** Claude fixes with fresh context on the temp branch, re-triggers verify (up to 3 attempts)
+   - **Give up:** Comments on the issue, cleans up stale branches
+
+This ensures only verified code lands on the PR branch, and fix attempts get fresh context instead of accumulating a polluted conversation.
+
+### Bot comment isolation
+
+The Claude Code Action posts status comments ("working…", plan updates) which trigger `issue_comment` events. The concurrency group includes the comment author (`claude-245-username` vs `claude-245-claude[bot]`) so bot comments never cancel or interfere with the real run.
 
 ## Workflows
 
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
-| `claude.yml` | `@claude` comment | Runs Claude Code to implement work |
-| `test.yml` | Push/PR to main | Runs tests, notifies Claude on failure |
-| `orchestrate.yml` | PR merged | Closes story, triggers next one |
-| `watcher.yml` | Every 20 min | Health monitoring, re-triggers stuck work |
+| `claude.yml` | `@claude` comment | Runs Claude Code, pushes to temp branch, triggers verify-merge |
+| `verify-merge.yml` | Dispatched by claude.yml | Runs tests, merges if passing, fixes if failing (up to 3 attempts) |
+| `test.yml` | Push/PR to default branch | Runs tests on PRs |
+| `orchestrate.yml` | PR merged | Closes story, triggers next one in the epic |
 | `review-relay.yml` | Bot review submitted | Relays reviewer feedback to Claude |
+| `watcher.yml` | Every 30 min | Re-triggers stuck stories, cleans up stale branches |
 | `daily-planner.yml` | Weekends (configurable) | Creates new epics with stories |
 
 ## Safety Mechanisms
 
-- **Concurrency limit:** Max 3 Claude workflows at once
-- **Test fix limit:** 3 auto-fix attempts before requiring human review
-- **Story retry limit:** 5 attempts before creating alert issue
+- **Bot isolation:** Bot status comments get separate concurrency groups — can't cancel real runs
+- **Temp branch pattern:** Only verified code reaches the PR branch
+- **Fix attempt limit:** 3 attempts per verify-merge before giving up
+- **Story retry limit:** 5 watcher retries before requiring human review
 - **Review relay limit:** 3 rounds before escalating to human
-- **Grace period:** 15-minute cooldown before re-triggering stalled work
-- **Backlog gates:** Won't create new epics if 3+ are already open
-- **Auto-push safety net:** Commits Claude's forgotten changes automatically
-- **Consecutive failure detection:** Pauses pipeline after 3+ unmerged PRs
+- **Grace period:** 30-minute cooldown before watcher re-triggers
+- **Consecutive failure detection:** Orchestrator pauses after 3+ unmerged PRs
+- **Stale branch cleanup:** Watcher and give-up job clean up orphan `tmp/` branches
 
 ## Skills
 
-Skills are reusable prompts that guide Claude's implementation approach. See `.claude/skills/` for examples.
+Skills are reusable prompts that guide Claude's implementation approach. See `.claude/skills/`.
 
 | Skill | Purpose |
 |-------|---------|
@@ -161,27 +170,22 @@ Skills are reusable prompts that guide Claude's implementation approach. See `.c
 
 1. Create `.claude/skills/<name>/SKILL.md`
 2. Add the skill to the dropdown in `.github/ISSUE_TEMPLATE/story.yml`
-3. Reference it in `CLAUDE.md` and the planner's improvement categories
+3. Reference it in `CLAUDE.md`
 
 ### Changing the test command
 
-Edit `test.yml` line with the test runner. Examples:
-- Python: `python -m pytest tests/ -v`
-- Node: `npm test`
-- Go: `go test ./...`
-- Rust: `cargo test`
+Update the test/lint commands in three places:
+- `test.yml` — the CI check
+- `verify-merge.yml` — the verify job and capture-errors step
+- `claude.yml` — the allowed_tools (add your test runner)
 
 ### Changing the planner schedule
 
-Edit `daily-planner.yml` cron expressions. Default is weekends only. Set to run daily or on-demand only.
+Edit `daily-planner.yml` cron expressions. Default is weekends only. Set to daily or on-demand only.
 
 ### Disabling auto-planning
 
 Remove or disable `daily-planner.yml` and trigger stories manually with `@claude` comments.
-
-## Architecture
-
-See [docs/architecture/](docs/architecture/) for diagrams (if your project uses them).
 
 ## License
 

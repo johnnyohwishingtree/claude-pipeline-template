@@ -30,7 +30,7 @@ jobs:
         run: |
           PR_NUM=${{ github.event.pull_request.number }}
 
-          # Skip merged/closed PRs — nothing to fix
+          # Skip merged/closed PRs
           PR_STATE=$(gh pr view "$PR_NUM" --repo ${{ github.repository }} --json state -q '.state')
           if [ "$PR_STATE" != "OPEN" ]; then
             echo "PR #$PR_NUM is $PR_STATE — skipping relay"
@@ -54,9 +54,11 @@ jobs:
             exit 0
           fi
 
+          # Count by content, not by author — comments posted via GH_PAT
+          # appear as the PAT owner, not as github-actions[bot]
           RELAY_COUNT=$(gh api \
             "repos/${{ github.repository }}/issues/${PR_NUM}/comments" \
-            --jq '[.[] | select(.user.login == "github-actions[bot]") | select(.body | contains("A code reviewer"))] | length')
+            --jq '[.[] | select(.body | contains("A code reviewer")) | select(.body | contains("review round"))] | length')
 
           echo "Relay count so far: $RELAY_COUNT"
 
@@ -82,7 +84,7 @@ jobs:
 
           COMMENTS=$(gh api \
             "repos/${{ github.repository }}/pulls/${PR_NUM}/comments" \
-            --jq "[.[] | select(.user.login == \"${REVIEWER}\") | {path: .path, body: .body, line: .line, id: .id, node_id: .node_id}]")
+            --jq "[.[] | select(.user.login == \"${REVIEWER}\") | {path: .path, body: .body, line: .line}]")
 
           COUNT=$(echo "$COMMENTS" | jq 'length')
           echo "Found $COUNT inline comments from $REVIEWER"
@@ -119,7 +121,7 @@ jobs:
 
           For each comment:
           1. If the feedback is valid, fix the code and push a commit
-          2. If the feedback is incorrect or not applicable, reply directly on the review comment explaining why
+          2. If the feedback is incorrect or not applicable, reply explaining why
           3. After addressing all comments, run tests to make sure nothing is broken
 
           IMPORTANT: You MUST git add, git commit, and git push your changes before finishing.
