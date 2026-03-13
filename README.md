@@ -10,12 +10,13 @@ An end-to-end autonomous development loop:
 @claude comment on issue
   -> Claude implements on claude/issue-N branch
     -> Pushes to tmp/ branch (no checks yet)
-      -> verify-merge: runs tests
-        -> Pass: merge into claude/issue-N, create PR, auto-merge
-        -> Fail: Claude fixes (fresh context, up to 3 attempts)
-          -> Bot reviewers (Gemini/Copilot) review the PR
-            -> review-relay forwards feedback to Claude
-              -> PR merges -> orchestrator triggers next story
+      -> verify-merge runs tests on tmp/
+        -> Pass: merge tmp/ into claude/issue-N, create PR, auto-merge
+        -> Fail: Claude fixes with fresh context, re-verify (up to 3x)
+  -> PR created
+    -> Bot reviewers (Gemini/Copilot) review the PR
+      -> review-relay forwards feedback to Claude
+    -> PR merges -> orchestrator triggers next story
 ```
 
 ## Quick Start
@@ -77,7 +78,7 @@ This configures:
 | **Require pull requests** | Prevents direct pushes to the default branch |
 | **Require `test` status check** | PRs can't merge with failing CI |
 | **Require review thread resolution** | All review comments must be resolved before merge |
-| **Pipeline labels** | `pending`, `in-progress`, `completed`, `epic`, `story` |
+| **Pipeline labels** | `pending`, `in-progress`, `completed`, `pipeline-stuck`, `epic`, `story` |
 
 <details>
 <summary>Manual setup (if you prefer not to use the script)</summary>
