@@ -241,7 +241,7 @@ jobs:
 
           To retry: Actions > Verify and Merge > Run workflow with \`tmp_branch: ${TMP_BRANCH}\`, \`target_branch: ${{ inputs.target_branch }}\`, \`attempt: 1\`
 
-          Or comment \`@claude fix the test/lint errors on this branch\` on the issue.
+          To retry with Claude, comment on the issue tagging the agent to fix the errors on this branch.
           EOF
             )" 2>/dev/null || echo "Failed to post comment"
           fi

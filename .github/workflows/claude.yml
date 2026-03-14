@@ -35,32 +35,20 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Create or switch to working branch
+      - name: Switch to PR branch if applicable
+        if: github.event.issue.pull_request || github.event.pull_request
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
-
-          if [ -n "${{ github.event.issue.pull_request }}" ]; then
-            # PR context — switch to the existing PR branch
-            PR_NUM=${{ github.event.issue.number }}
-            PR_BRANCH=$(gh pr view "$PR_NUM" --json headRefName -q '.headRefName')
-            echo "Switching to PR branch: $PR_BRANCH"
-            git checkout "$PR_BRANCH"
+          if [ -n "${{ github.event.pull_request.number }}" ]; then
+            PR_NUM=${{ github.event.pull_request.number }}
           else
-            # Issue context — create a dedicated branch for this work
-            ISSUE_NUM=${{ github.event.issue.number }}
-            BRANCH="claude/issue-${ISSUE_NUM}"
-
-            if git ls-remote --heads origin "$BRANCH" | grep -q "$BRANCH"; then
-              echo "Branch $BRANCH already exists — checking out"
-              git checkout "$BRANCH"
-            else
-              echo "Creating new branch: $BRANCH"
-              git checkout -b "$BRANCH"
-              git push -u origin "$BRANCH"
-            fi
+            PR_NUM=${{ github.event.issue.number }}
           fi
+          PR_BRANCH=$(gh pr view "$PR_NUM" --json headRefName -q '.headRefName')
+          echo "Switching to PR branch: $PR_BRANCH"
+          git checkout "$PR_BRANCH"
 
       # TODO: Set up your language runtime and install dependencies here.
       # Examples:
@@ -94,7 +82,7 @@ jobs:
         run: |
           git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
 
-          # Remember the working branch (PR branch or claude/issue-N)
+          # Remember the working branch (claude-code-action creates its own branch for issues)
           SOURCE_BRANCH=$(git branch --show-current)
           echo "source_branch=$SOURCE_BRANCH" >> $GITHUB_OUTPUT
 
