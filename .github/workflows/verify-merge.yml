@@ -27,8 +27,8 @@ on:
         default: '1'
 
 concurrency:
-  group: verify-merge-${{ inputs.tmp_branch }}
-  cancel-in-progress: true
+  group: verify-merge-${{ inputs.tmp_branch }}-attempt-${{ inputs.attempt }}
+  cancel-in-progress: false
 
 permissions:
   contents: write
