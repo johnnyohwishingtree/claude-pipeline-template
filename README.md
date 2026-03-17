@@ -11,12 +11,14 @@ An end-to-end autonomous development loop:
   -> Claude implements on claude/issue-N branch
     -> Pushes to tmp/ branch (no checks yet)
       -> verify-merge runs tests on tmp/
-        -> Pass: merge tmp/ into claude/issue-N, create PR, auto-merge
-        -> Fail: Claude fixes with fresh context, re-verify (up to 3x)
+        -> Pass: merge tmp/ into claude/issue-N, create PR
+        -> Fail: Claude fixes with fresh context, re-verify (up to 6x)
   -> PR created
     -> Bot reviewers (Gemini/Copilot) review the PR
-      -> review-relay forwards feedback to Claude
-    -> PR merges -> orchestrator triggers next story
+      -> review-relay dispatches review-fix to address feedback
+    -> review-guardian auto-approves after review
+    -> auto-merge merges when all conditions met
+    -> orchestrator triggers next story
 ```
 
 ## Quick Start
@@ -32,7 +34,9 @@ Go to **Settings > Secrets and variables > Actions** and add:
 | Secret | Description |
 |--------|-------------|
 | `CLAUDE_CODE_OAUTH_TOKEN` | OAuth token from Claude Code |
-| `GH_PAT` | GitHub Personal Access Token with `repo`, `issues`, `pull-requests` scopes |
+| `GH_PAT` | GitHub Personal Access Token with `repo`, `workflow`, `issues`, `pull-requests` scopes |
+
+> **Important:** `GH_PAT` must include the `workflow` scope. Without it, Claude can't push branches when `.github/workflows/` files differ from the default branch.
 
 <details>
 <summary><strong>How to get the Claude token</strong></summary>
@@ -52,16 +56,26 @@ Replace `OWNER/REPO` with your repository (e.g. `myuser/myproject`).
 
 </details>
 
-### 3. Customize for your project
+### 3. Set up variables (optional)
 
-1. **Edit `CLAUDE.md`** — Replace the skeleton with your project's context, architecture, and conventions
-2. **Edit workflow TODO sections** — Update language runtime, dependencies, and test commands in:
+Go to **Settings > Secrets and variables > Actions > Variables**:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PREFERRED_AGENT` | `claude` | Which agent to trigger for stories (`claude` or `gemini`) |
+| `PIPELINE_ENABLED` | `true` | Set to `false` to disable the autonomous pipeline |
+
+### 4. Customize for your project
+
+1. **Edit `CLAUDE.md`** -- Replace the skeleton with your project's context, architecture, and conventions
+2. **Edit workflow TODO sections** -- Update language runtime, dependencies, and test commands in:
    - `.github/workflows/claude.yml` (setup + allowed tools)
    - `.github/workflows/verify-merge.yml` (setup + test commands)
    - `.github/workflows/test.yml` (setup + test commands)
-3. **Edit `.claude/skills/`** — Customize or add skills relevant to your project
+   - `.github/workflows/review-fix.yml` (setup + verify step)
+3. **Edit `.claude/skills/`** -- Customize or add skills relevant to your project
 
-### 4. Configure repository settings
+### 5. Configure repository settings
 
 Run the setup script:
 
@@ -101,7 +115,7 @@ Create: `pending`, `in-progress`, `completed`, `pipeline-stuck`, `epic`, `story`
 
 </details>
 
-### 5. Start the pipeline
+### 6. Start the pipeline
 
 Either:
 - **Manual:** Create an issue and comment `@claude` on it
@@ -114,40 +128,91 @@ Either:
 
 Claude never pushes directly to the PR branch. Instead:
 
-1. **`claude.yml`** — Claude works on `claude/issue-N` branch, then pushes to `tmp/claude-<run_id>`
-2. **`verify-merge.yml`** — Runs tests on the temp branch:
-   - **Pass:** Merges temp into `claude/issue-N`, deletes temp, creates PR with auto-merge
-   - **Fail:** Claude fixes with fresh context on the temp branch, re-triggers verify (up to 3 attempts)
+1. **`claude.yml`** -- Claude works on `claude/issue-N` branch, then pushes to `tmp/claude-<run_id>`
+2. **`verify-merge.yml`** -- Runs tests on the temp branch:
+   - **Pass:** Merges temp into `claude/issue-N`, deletes temp, creates PR
+   - **Fail:** Claude fixes with fresh context on the temp branch, re-triggers verify (up to 6 attempts)
    - **Give up:** Comments on the issue, cleans up stale branches
 
 This ensures only verified code lands on the PR branch, and fix attempts get fresh context instead of accumulating a polluted conversation.
 
+### Resume from existing work
+
+When Claude is triggered on an issue that already has work from a previous run, `claude.yml` automatically finds the branch with the most commits ahead of the default branch and resumes from there. No work is lost across retries or timeouts.
+
+### Timeout rescue
+
+If a Claude run times out (60 minute limit), the rescue step saves all in-progress work to the temp branch and posts a comment with instructions to resume.
+
+### Code review flow
+
+```
+PR created
+  -> Gemini/Copilot posts review
+    -> review-relay.yml detects bot review
+      -> Dispatches review-fix.yml (Claude with full Edit/Write permissions)
+        -> Claude fixes feedback, resolves threads, pushes
+    -> review-guardian.yml auto-approves (if no critical/high issues)
+  -> auto-merge.yml merges when: tests pass + approved + threads resolved
+```
+
+> **Why review-fix instead of @claude PR comments?** `claude-code-action@v1` strips Edit/Write tools when triggered from PR comments -- only read tools are allowed. `review-fix.yml` uses `workflow_dispatch` which gives Claude full tool access.
+
 ### Bot comment isolation
 
-The Claude Code Action posts status comments ("working…", plan updates) which trigger `issue_comment` events. The concurrency group includes the comment author (`claude-245-username` vs `claude-245-claude[bot]`) so bot comments never cancel or interfere with the real run.
+The Claude Code Action posts status comments ("working...", plan updates) which trigger `issue_comment` events. The concurrency group includes the comment author (`claude-245-username` vs `claude-245-claude[bot]`) so bot comments never cancel or interfere with the real run.
 
 ## Workflows
 
+### Core Pipeline
+
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
-| `claude.yml` | `@claude` comment | Runs Claude Code, pushes to temp branch, triggers verify-merge |
-| `verify-merge.yml` | Dispatched by claude.yml | Runs tests, merges if passing, fixes if failing (up to 3 attempts) |
-| `test.yml` | Push/PR to default branch | Runs tests on PRs |
+| `claude.yml` | `@claude` comment | Runs Claude, pushes to temp branch, triggers verify-merge |
+| `verify-merge.yml` | Dispatched by claude.yml | Runs tests, merges if passing, fixes if failing (up to 6 attempts) |
+| `test.yml` | Push/PR to default branch | Runs tests; notifies Claude on failure for claude/ branches |
+
+### Code Review
+
+| Workflow | Trigger | Purpose |
+|----------|---------|---------|
+| `review-relay.yml` | Bot review submitted | Dispatches review-fix with feedback (up to 3 rounds) |
+| `review-fix.yml` | Dispatched by review-relay | Claude fixes review feedback with full permissions |
+| `review-guardian.yml` | CI complete, review submitted | Auto-approves after review; requests Claude fallback if no review |
+
+### Merge & Pipeline
+
+| Workflow | Trigger | Purpose |
+|----------|---------|---------|
+| `auto-merge.yml` | Tests/review/push events | Single gate: merges when tests + approval + threads resolved |
 | `orchestrate.yml` | PR merged | Closes story, triggers next one in the epic |
-| `review-relay.yml` | Bot review submitted | Relays reviewer feedback to Claude |
-| `watcher.yml` | Every 30 min | Re-triggers stuck stories, cleans up stale branches |
+| `resolve-conflicts.yml` | Push to default branch | Auto-resolves merge conflicts on open PRs |
+
+### Monitoring & Planning
+
+| Workflow | Trigger | Purpose |
+|----------|---------|---------|
+| `watcher.yml` | Every 20 min | Re-triggers stuck stories, detects failing CI, cleans orphan PRs |
 | `daily-planner.yml` | Weekends (configurable) | Creates new epics with stories |
+| `pipeline-toggle.yml` | Manual | Enable/disable the autonomous pipeline |
 
 ## Safety Mechanisms
 
-- **Bot isolation:** Bot status comments get separate concurrency groups — can't cancel real runs
+- **Bot isolation:** Bot status comments get separate concurrency groups -- can't cancel real runs
 - **Temp branch pattern:** Only verified code reaches the PR branch
-- **Fix attempt limit:** 3 attempts per verify-merge before giving up
+- **Fix attempt limit:** 6 attempts per verify-merge before giving up
+- **No-changes detection:** If Claude produces no changes, skips remaining attempts
+- **Permission denial detection:** Aborts fix loop if Claude hits >5 permission denials
+- **Timeout rescue:** Saves work and triggers next attempt on timeout
+- **Cross-attempt context:** `.claude-fix-log.md` prevents repeating failed approaches
 - **Story retry limit:** 5 watcher retries before requiring human review
 - **Review relay limit:** 3 rounds before escalating to human
-- **Grace period:** 30-minute cooldown before watcher re-triggers
+- **Review-fix dispatch:** Full Edit/Write permissions (not restricted @claude PR comments)
+- **Grace period:** 15-minute cooldown before watcher re-triggers
 - **Consecutive failure detection:** Orchestrator pauses after 3+ unmerged PRs
-- **Stale branch cleanup:** Watcher and give-up job clean up orphan `tmp/` branches
+- **Orphan PR cleanup:** Watcher closes PRs with no linked story
+- **Auto-conflict resolution:** Infrastructure/lock files take default branch version
+- **Event-driven approval:** Auto-approve only flows through review event hooks
 
 ## Skills
 
@@ -174,10 +239,10 @@ Skills are reusable prompts that guide Claude's implementation approach. See `.c
 
 ### Changing the test command
 
-Update the test/lint commands in three places:
-- `test.yml` — the CI check
-- `verify-merge.yml` — the verify job and capture-errors step
-- `claude.yml` — the allowed_tools (add your test runner)
+Update the test/lint commands in these places:
+- `test.yml` -- the CI check
+- `verify-merge.yml` -- the verify job checks
+- `review-fix.yml` -- the verify step (optional)
 
 ### Changing the planner schedule
 
@@ -186,6 +251,10 @@ Edit `daily-planner.yml` cron expressions. Default is weekends only. Set to dail
 ### Disabling auto-planning
 
 Remove or disable `daily-planner.yml` and trigger stories manually with `@claude` comments.
+
+### Using a different agent
+
+Set the `PREFERRED_AGENT` repository variable to `gemini` to use Gemini instead of Claude for story triggers. Both agents use the same skills and conventions.
 
 ## License
 
