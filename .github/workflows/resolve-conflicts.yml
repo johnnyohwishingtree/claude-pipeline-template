@@ -1,0 +1,185 @@
+name: Resolve Merge Conflicts
+
+# Detects open PRs with merge conflicts against the default branch and resolves them.
+# Triggered:
+#   - On push to default branch (proactive: check all open PRs)
+#   - Via workflow_dispatch (targeted: resolve a specific PR)
+
+on:
+  push:
+    branches: [main, master]
+
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'Specific PR number to resolve (leave empty to check all open PRs)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: resolve-conflicts-${{ inputs.pr_number || 'all' }}
+  cancel-in-progress: true
+
+jobs:
+  find-conflicting-prs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      prs: ${{ steps.find.outputs.prs }}
+
+    steps:
+      - name: Find PRs with conflicts
+        id: find
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          REPO: ${{ github.repository }}
+        run: |
+          DEFAULT_BRANCH="${{ github.event.repository.default_branch || 'main' }}"
+
+          if [ -n "${{ inputs.pr_number }}" ]; then
+            # Targeted: just check the specified PR
+            MERGEABLE=$(gh pr view "${{ inputs.pr_number }}" --repo "$REPO" \
+              --json mergeable -q '.mergeable' 2>/dev/null || echo "UNKNOWN")
+            if [ "$MERGEABLE" = "CONFLICTING" ]; then
+              BRANCH=$(gh pr view "${{ inputs.pr_number }}" --repo "$REPO" \
+                --json headRefName -q '.headRefName' 2>/dev/null)
+              echo "prs=[{\"number\":${{ inputs.pr_number }},\"branch\":\"$BRANCH\"}]" >> $GITHUB_OUTPUT
+            else
+              echo "PR #${{ inputs.pr_number }} is not conflicting (state: $MERGEABLE)"
+              echo "prs=[]" >> $GITHUB_OUTPUT
+            fi
+          else
+            # Proactive: check all open PRs targeting default branch
+            PRS=$(gh pr list --repo "$REPO" --base "$DEFAULT_BRANCH" --state open \
+              --json number,headRefName,mergeable \
+              -q '[.[] | select(.mergeable == "CONFLICTING") | {number: .number, branch: .headRefName}]' \
+              2>/dev/null || echo "[]")
+            echo "Found conflicting PRs: $PRS"
+            echo "prs=$PRS" >> $GITHUB_OUTPUT
+          fi
+
+  resolve:
+    needs: find-conflicting-prs
+    if: needs.find-conflicting-prs.outputs.prs != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        pr: ${{ fromJSON(needs.find-conflicting-prs.outputs.prs) }}
+      max-parallel: 1
+
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.pr.branch }}
+          fetch-depth: 0
+
+      - name: Configure git and auth
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+          git config user.name "Claude CI"
+          git config user.email "claude-ci@users.noreply.github.com"
+
+      - name: Merge default branch and resolve conflicts
+        id: merge
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          DEFAULT_BRANCH="${{ github.event.repository.default_branch || 'main' }}"
+          git fetch origin "$DEFAULT_BRANCH"
+          PR_NUM="${{ matrix.pr.number }}"
+          BRANCH="${{ matrix.pr.branch }}"
+
+          # Attempt the merge
+          if git merge "origin/$DEFAULT_BRANCH" --no-edit 2>/dev/null; then
+            echo "Merged $DEFAULT_BRANCH cleanly — no conflicts after all"
+            echo "resolved=clean" >> $GITHUB_OUTPUT
+          else
+            echo "Merge conflicts detected — resolving"
+
+            # Get list of conflicting files
+            CONFLICTING=$(git diff --name-only --diff-filter=U)
+            echo "Conflicting files:"
+            echo "$CONFLICTING"
+
+            # Determine which files belong to this PR's story vs infrastructure
+            PR_FILES=$(git diff --name-only "origin/$DEFAULT_BRANCH"..."origin/$BRANCH" 2>/dev/null || echo "")
+
+            RESOLVED_COUNT=0
+            MANUAL_NEEDED=""
+
+            for file in $CONFLICTING; do
+              # Infrastructure files: take default branch's version
+              if echo "$file" | grep -qE '^\.(github|claude)/|^CLAUDE\.md'; then
+                echo "Infrastructure file: $file — taking $DEFAULT_BRANCH's version"
+                git checkout "origin/$DEFAULT_BRANCH" -- "$file"
+                git add "$file"
+                RESOLVED_COUNT=$((RESOLVED_COUNT + 1))
+              # Lock files: take default branch's version
+              elif echo "$file" | grep -qE 'lock\.(yaml|json)$'; then
+                echo "Lock file: $file — taking $DEFAULT_BRANCH's version"
+                git checkout "origin/$DEFAULT_BRANCH" -- "$file"
+                git add "$file"
+                RESOLVED_COUNT=$((RESOLVED_COUNT + 1))
+              # Files this PR changed: take the PR's version
+              elif echo "$PR_FILES" | grep -qF "$file"; then
+                echo "PR-modified file: $file — taking PR's version"
+                git checkout --ours "$file"
+                git add "$file"
+                RESOLVED_COUNT=$((RESOLVED_COUNT + 1))
+              else
+                # Unknown — can't auto-resolve safely
+                MANUAL_NEEDED="$MANUAL_NEEDED $file"
+              fi
+            done
+
+            if [ -n "$MANUAL_NEEDED" ]; then
+              echo "::warning::Could not auto-resolve: $MANUAL_NEEDED"
+              git merge --abort
+              echo "resolved=manual" >> $GITHUB_OUTPUT
+              echo "manual_files=$MANUAL_NEEDED" >> $GITHUB_OUTPUT
+            else
+              git commit --no-edit
+              echo "resolved=auto" >> $GITHUB_OUTPUT
+              echo "resolved_count=$RESOLVED_COUNT" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Push resolved branch
+        if: steps.merge.outputs.resolved == 'auto' || steps.merge.outputs.resolved == 'clean'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          git push origin HEAD
+          echo "Pushed conflict resolution for PR #${{ matrix.pr.number }}"
+
+      - name: Comment on PR (resolved)
+        if: steps.merge.outputs.resolved == 'auto' || steps.merge.outputs.resolved == 'clean'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          DEFAULT_BRANCH="${{ github.event.repository.default_branch || 'main' }}"
+          TYPE="${{ steps.merge.outputs.resolved }}"
+          if [ "$TYPE" = "clean" ]; then
+            MSG="Merged latest $DEFAULT_BRANCH (no conflicts)."
+          else
+            MSG="Auto-resolved merge conflicts with $DEFAULT_BRANCH (${{ steps.merge.outputs.resolved_count }} files). Infrastructure/lock files took $DEFAULT_BRANCH's version; PR-modified files kept this branch's version."
+          fi
+          gh pr comment "${{ matrix.pr.number }}" --repo "${{ github.repository }}" \
+            --body "$MSG" 2>/dev/null || echo "Failed to post comment"
+
+      - name: Comment on PR (manual needed)
+        if: steps.merge.outputs.resolved == 'manual'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          gh pr comment "${{ matrix.pr.number }}" --repo "${{ github.repository }}" \
+            --body "Could not auto-resolve merge conflicts. Files needing manual resolution: \`${{ steps.merge.outputs.manual_files }}\`" \
+            2>/dev/null || echo "Failed to post comment"

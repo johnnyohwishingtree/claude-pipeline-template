@@ -1,0 +1,28 @@
+name: Toggle Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      enabled:
+        description: 'Enable or disable the autonomous pipeline'
+        required: true
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+permissions: {}
+
+jobs:
+  toggle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Set PIPELINE_ENABLED
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          gh variable set PIPELINE_ENABLED \
+            --body "${{ inputs.enabled }}" \
+            --repo "${{ github.repository }}"
+          echo "PIPELINE_ENABLED set to ${{ inputs.enabled }}"

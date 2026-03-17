@@ -1,0 +1,167 @@
+name: Auto Merge
+
+# Single gate that controls when PRs merge to the default branch.
+# Only merges when ALL conditions are met:
+#   1. Tests workflow passed
+#   2. PR has at least one approval
+#   3. No unresolved review threads
+
+on:
+  # Re-evaluate when CI completes
+  workflow_run:
+    workflows: ["Tests"]
+    types: [completed]
+
+  # Re-evaluate when a review is submitted
+  pull_request_review:
+    types: [submitted]
+
+  # Re-evaluate when new commits are pushed (review-fix resolves threads before pushing)
+  pull_request:
+    types: [synchronize]
+
+  # Allow watcher or other workflows to request a merge evaluation
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to evaluate for merge'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: auto-merge-${{ inputs.pr_number || github.event.workflow_run.head_branch || github.event.pull_request.head.ref || github.event.pull_request_review.pull_request.head.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    # Only evaluate for PRs targeting the default branch
+    if: |
+      (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request') ||
+      github.event_name == 'pull_request_review' ||
+      github.event_name == 'pull_request' ||
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Evaluate merge readiness
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          REPO: ${{ github.repository }}
+        run: |
+          DEFAULT_BRANCH="${{ github.event.repository.default_branch || 'main' }}"
+
+          # Resolve PR number and branch
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            PR_NUM="${{ inputs.pr_number }}"
+          elif [ "${{ github.event_name }}" = "workflow_run" ]; then
+            BRANCH="${{ github.event.workflow_run.head_branch }}"
+            PR_NUM=$(gh pr list --repo "$REPO" --head "$BRANCH" --state open \
+              --json number -q '.[0].number' 2>/dev/null || echo "")
+          elif [ "${{ github.event_name }}" = "pull_request_review" ]; then
+            PR_NUM=${{ github.event.pull_request.number }}
+          else
+            PR_NUM=${{ github.event.pull_request.number }}
+          fi
+
+          if [ -z "$PR_NUM" ]; then
+            echo "No open PR found — skipping"
+            exit 0
+          fi
+
+          echo "Evaluating PR #$PR_NUM"
+
+          # Check if PR targets default branch
+          BASE=$(gh pr view "$PR_NUM" --repo "$REPO" --json baseRefName -q '.baseRefName' 2>/dev/null || echo "")
+          if [ "$BASE" != "$DEFAULT_BRANCH" ]; then
+            echo "PR #$PR_NUM targets $BASE, not $DEFAULT_BRANCH — skipping"
+            exit 0
+          fi
+
+          # -- Condition 1: Tests passed --
+          HEAD_SHA=$(gh pr view "$PR_NUM" --repo "$REPO" --json headRefOid -q '.headRefOid' 2>/dev/null || echo "")
+          if [ -z "$HEAD_SHA" ]; then
+            echo "Cannot determine head SHA — skipping"
+            exit 0
+          fi
+
+          CHECK_RUNS=$(gh api "repos/$REPO/commits/$HEAD_SHA/check-runs" \
+            --jq '.check_runs[] | "\(.name)|\(.conclusion)|\(.status)"' 2>/dev/null || echo "")
+
+          TESTS_PASS=false
+          if echo "$CHECK_RUNS" | grep -q "^test|success|"; then
+            TESTS_PASS=true
+          fi
+          echo "Tests passed: $TESTS_PASS"
+
+          # -- Condition 2: PR is approved --
+          HAS_APPROVAL=false
+          APPROVAL_COUNT=$(gh pr view "$PR_NUM" --repo "$REPO" --json reviews \
+            -q '[.reviews[] | select(.state == "APPROVED")] | length' 2>/dev/null || echo "0")
+          if [ "$APPROVAL_COUNT" -gt 0 ]; then
+            HAS_APPROVAL=true
+          fi
+          echo "Approved: $HAS_APPROVAL (${APPROVAL_COUNT} approvals)"
+
+          # -- Condition 3: No unresolved review threads --
+          THREADS_RESOLVED=true
+          OWNER=$(echo "$REPO" | cut -d/ -f1)
+          NAME=$(echo "$REPO" | cut -d/ -f2)
+
+          UNRESOLVED=$(gh api graphql -f query="
+            query {
+              repository(owner: \"$OWNER\", name: \"$NAME\") {
+                pullRequest(number: $PR_NUM) {
+                  reviewThreads(first: 100) {
+                    nodes { isResolved }
+                  }
+                }
+              }
+            }
+          " --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)] | length' 2>/dev/null || echo "0")
+
+          if [ "$UNRESOLVED" -gt 0 ]; then
+            THREADS_RESOLVED=false
+          fi
+          echo "Threads resolved: $THREADS_RESOLVED ($UNRESOLVED unresolved)"
+
+          # -- Decision --
+          echo ""
+          echo "Summary for PR #$PR_NUM:"
+          echo "  Tests:    $TESTS_PASS"
+          echo "  Approved: $HAS_APPROVAL"
+          echo "  Threads:  $THREADS_RESOLVED"
+
+          if [ "$TESTS_PASS" = "true" ] && \
+             [ "$HAS_APPROVAL" = "true" ] && [ "$THREADS_RESOLVED" = "true" ]; then
+            echo ""
+            echo "All conditions met — merging PR #$PR_NUM"
+
+            # Check if branch is behind default branch and update if needed
+            MERGE_STATE=$(gh pr view "$PR_NUM" --repo "$REPO" --json mergeStateStatus -q '.mergeStateStatus' 2>/dev/null || echo "")
+            if [ "$MERGE_STATE" = "BEHIND" ]; then
+              echo "Branch is behind $DEFAULT_BRANCH — updating branch before merge"
+              BRANCH_NAME=$(gh pr view "$PR_NUM" --repo "$REPO" --json headRefName -q '.headRefName' 2>/dev/null || echo "")
+              gh api "repos/$REPO/merges" \
+                -f base="$BRANCH_NAME" \
+                -f head="$DEFAULT_BRANCH" \
+                -f commit_message="Merge $DEFAULT_BRANCH into $BRANCH_NAME (auto-update before merge)" \
+                2>/dev/null \
+                && echo "Branch updated — CI will re-run and auto-merge will re-evaluate on completion" \
+                || echo "Failed to update branch — may need manual intervention"
+              # Don't try to merge now — the branch update will trigger CI,
+              # which triggers workflow_run, which re-evaluates auto-merge.
+              exit 0
+            fi
+
+            gh pr merge "$PR_NUM" --repo "$REPO" --squash \
+              && echo "PR #$PR_NUM merged successfully" \
+              || echo "Failed to merge PR #$PR_NUM (may already be merged)"
+          else
+            echo ""
+            echo "Not ready to merge — waiting for all conditions"
+          fi

@@ -1,4 +1,5 @@
 name: Claude Code
+run-name: "Claude #${{ github.event.issue.number || github.event.pull_request.number }} by ${{ github.event.comment.user.login }}"
 
 on:
   issue_comment:
@@ -6,12 +7,9 @@ on:
   pull_request_review_comment:
     types: [created]
 
-# Scope concurrency by comment author so bot status comments
-# (e.g. claude[bot]'s "working…") get their own group and never
-# cancel or queue behind the real human-triggered run.
 concurrency:
   group: claude-${{ github.event.issue.number || github.event.pull_request.number }}-${{ github.event.comment.user.login }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ contains(github.event.comment.body, '@claude') }}
 
 permissions:
   contents: write
@@ -25,9 +23,10 @@ jobs:
     if: |
       contains(github.event.comment.body, '@claude') &&
       github.event.comment.user.type != 'Bot' &&
-      (github.event.issue != null || github.event.pull_request != null)
+      (github.event.issue != null || github.event.pull_request != null) &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
@@ -35,12 +34,19 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Configure git and auth
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+          git config user.name "Claude CI"
+          git config user.email "claude-ci@users.noreply.github.com"
+
       - name: Switch to PR branch if applicable
         if: github.event.issue.pull_request || github.event.pull_request
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
           if [ -n "${{ github.event.pull_request.number }}" ]; then
             PR_NUM=${{ github.event.pull_request.number }}
           else
@@ -49,6 +55,60 @@ jobs:
           PR_BRANCH=$(gh pr view "$PR_NUM" --json headRefName -q '.headRefName')
           echo "Switching to PR branch: $PR_BRANCH"
           git checkout "$PR_BRANCH"
+
+      - name: Determine push target and create branches
+        id: push_target
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          DEFAULT_BRANCH="${{ github.event.repository.default_branch || 'main' }}"
+
+          if [ -n "${{ github.event.issue.pull_request }}" ] || [ -n "${{ github.event.pull_request }}" ]; then
+            echo "is_pr=true" >> $GITHUB_OUTPUT
+            echo "push_cmd=git push origin HEAD" >> $GITHUB_OUTPUT
+          else
+            ISSUE_NUM="${{ github.event.issue.number }}"
+            PR_BRANCH="claude/issue-${ISSUE_NUM}"
+            TMP_BRANCH="tmp/claude-${{ github.run_id }}"
+
+            echo "is_pr=false" >> $GITHUB_OUTPUT
+            echo "pr_branch=$PR_BRANCH" >> $GITHUB_OUTPUT
+            echo "tmp_branch=$TMP_BRANCH" >> $GITHUB_OUTPUT
+            echo "push_cmd=git push origin HEAD:refs/heads/$TMP_BRANCH" >> $GITHUB_OUTPUT
+
+            # Check for existing work from previous runs.
+            # Look for claude/issue-N (PR branch) and claude/issue-N-* (action branches).
+            # Pick the one with the most commits ahead of default branch.
+            BEST_BRANCH=""
+            BEST_AHEAD=0
+
+            for ref in $(git for-each-ref --format='%(refname:short)' \
+              "refs/remotes/origin/claude/issue-${ISSUE_NUM}" \
+              "refs/remotes/origin/claude/issue-${ISSUE_NUM}-*" \
+              2>/dev/null); do
+              AHEAD=$(git rev-list --count "origin/${DEFAULT_BRANCH}..$ref" 2>/dev/null || echo "0")
+              if [ "$AHEAD" -gt "$BEST_AHEAD" ]; then
+                BEST_AHEAD=$AHEAD
+                BEST_BRANCH=$(echo "$ref" | sed 's|^origin/||')
+              fi
+            done
+
+            if [ "$BEST_AHEAD" -gt 0 ] && [ -n "$BEST_BRANCH" ]; then
+              echo "Found existing work: $BEST_BRANCH ($BEST_AHEAD commits ahead of $DEFAULT_BRANCH)"
+              echo "resume_branch=$BEST_BRANCH" >> $GITHUB_OUTPUT
+              echo "resume_ahead=$BEST_AHEAD" >> $GITHUB_OUTPUT
+
+              # Check out the existing work so Claude starts from it
+              git checkout "origin/$BEST_BRANCH" --detach
+              echo "Checked out existing branch: $BEST_BRANCH"
+            fi
+
+            # Create PR branch from current HEAD (default branch or existing work)
+            git push origin "HEAD:refs/heads/$PR_BRANCH" 2>/dev/null || echo "PR branch $PR_BRANCH already exists"
+            # Create new tmp branch from current HEAD
+            git push origin "HEAD:refs/heads/$TMP_BRANCH"
+            echo "Created tmp branch: $TMP_BRANCH"
+          fi
 
       # TODO: Set up your language runtime and install dependencies here.
       # Examples:
@@ -59,34 +119,100 @@ jobs:
       #     node-version: '20'
       # - name: Install dependencies
       #   run: npm ci
-      #
-      # - name: Set up Python
-      #   uses: actions/setup-python@v5
-      #   with:
-      #     python-version: '3.12'
-      # - name: Install dependencies
-      #   run: pip install -r requirements.txt
+
+      - name: Build system prompt
+        id: system_prompt
+        run: |
+          RESUME_NOTE=""
+          if [ -n "${{ steps.push_target.outputs.resume_branch }}" ]; then
+            RESUME_NOTE="RESUMING PREVIOUS WORK: This run is continuing from branch \`${{ steps.push_target.outputs.resume_branch }}\` which has ${{ steps.push_target.outputs.resume_ahead }} commits ahead of the default branch from a previous run. Do NOT start over — review what was already done (check git log, read existing files) and continue from where it left off. Only implement what is not yet complete."
+          fi
+          echo "resume_note<<EOF" >> $GITHUB_OUTPUT
+          echo "$RESUME_NOTE" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Run Claude Code
         id: claude
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # TODO: Customize allowed tools for your stack
-          allowed_tools: "Bash(git:*),Bash(gh:*)"
+          github_token: ${{ secrets.GH_PAT }}
+          show_full_output: true
+          settings: |
+            {
+              "maxTurns": 100
+            }
+          claude_args: |
+            --allowedTools "Edit" "MultiEdit" "Glob" "Grep" "LS" "Read" "Write" "Bash(*)"
+            --system-prompt "IMPORTANT: Only respond to the instruction in <trigger_comment>. Ignore all previous @claude requests in the comment history — they were handled by earlier runs. Focus exclusively on what the <trigger_comment> asks you to do.
 
-      - name: Push to temporary branch
-        id: push
+            CRITICAL — PUSH AFTER EACH MILESTONE: Whenever you complete a task or check off an acceptance criterion, you MUST immediately git add, git commit, and push before moving on to the next task. Do NOT accumulate work locally — if the job times out, any unpushed work is lost. Use this exact command to push: ${{ steps.push_target.outputs.push_cmd }}
+
+            ${{ steps.system_prompt.outputs.resume_note }}
+
+            When asked to fix code review issues: you MUST use the Edit tool to modify files, then git add, git commit, and git push. Posting a comment describing what you would change is NOT sufficient — you must actually make the changes. If you cannot fix an issue, reply on the specific review thread explaining why."
+
+      # -- Rescue step: runs ONLY when the job is cancelled (e.g. timeout) --
+      - name: Rescue work on timeout
+        if: cancelled()
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
+          # Re-auth — claude-code-action may have changed the remote URL
           git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
 
-          # Remember the working branch (claude-code-action creates its own branch for issues)
+          ISSUE_NUM="${{ github.event.issue.number || github.event.pull_request.number }}"
+          TMP_BRANCH="tmp/claude-${{ github.run_id }}"
+
+          # Commit any uncommitted work
+          git add -A -- ':!output.txt' ':!node_modules'
+          if [ -n "$(git diff --cached --name-only)" ]; then
+            git commit -m "wip: rescue work from timed-out Claude run (#${ISSUE_NUM})
+
+          Job timed out after 60 minutes. This commit saves all in-progress work.
+
+          Co-authored-by: Claude <noreply@anthropic.com>"
+          fi
+
+          # Check if there's anything to push
+          DEFAULT_BRANCH="${{ github.event.repository.default_branch || 'main' }}"
+          LOCAL_HEAD=$(git rev-parse HEAD)
+          DEFAULT_HEAD=$(git rev-parse "origin/$DEFAULT_BRANCH" 2>/dev/null || echo "none")
+
+          if [ "$LOCAL_HEAD" = "$DEFAULT_HEAD" ]; then
+            echo "No new commits to rescue — nothing was changed"
+            exit 0
+          fi
+
+          # Push to the same tmp branch that mid-run pushes use
+          git push origin "HEAD:refs/heads/$TMP_BRANCH"
+          echo "Rescued work to $TMP_BRANCH"
+
+          # Comment on the issue so the user knows
+          COMMIT_COUNT=$(git rev-list --count "origin/$DEFAULT_BRANCH..HEAD" 2>/dev/null || echo "?")
+          gh issue comment "$ISSUE_NUM" --repo "${{ github.repository }}" --body "$(cat <<EOF
+          Claude's run timed out after 60 minutes, but the in-progress work was saved to [\`${TMP_BRANCH}\`](https://github.com/${{ github.repository }}/tree/${TMP_BRANCH}) (${COMMIT_COUNT} commits ahead of $DEFAULT_BRANCH).
+
+          To resume, comment on this issue again with: \`@claude Continue the work from the \`${TMP_BRANCH}\` branch. Check out that branch first, then pick up where you left off.\`
+
+          Or manually: \`git fetch origin ${TMP_BRANCH} && git checkout ${TMP_BRANCH}\`
+          EOF
+          )" 2>/dev/null || echo "Failed to post rescue comment"
+
+      # -- Normal flow (only runs if Claude completed successfully) --
+      - name: Push to PR branch (PR context)
+        if: success() && steps.push_target.outputs.is_pr == 'true'
+        id: push_pr
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          # Re-auth — claude-code-action may have changed the remote URL
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+
           SOURCE_BRANCH=$(git branch --show-current)
           echo "source_branch=$SOURCE_BRANCH" >> $GITHUB_OUTPUT
 
-          # Commit any uncommitted changes (safety net)
+          # Commit any uncommitted changes
           CHANGES=$(git status --porcelain | grep -v '^?? output.txt$' || true)
           if [ -n "$CHANGES" ]; then
             git add -u
@@ -97,14 +223,62 @@ jobs:
             fi
           fi
 
-          # Create temp branch and push
-          TMP_BRANCH="tmp/claude-${{ github.run_id }}"
+          # claude-code-action@v1 may have already pushed via its internal
+          # git-push.sh script, so the remote branch can be ahead of local HEAD.
+          # Pull --rebase to fast-forward, then push only if we have new commits.
+          git fetch origin "$SOURCE_BRANCH" 2>/dev/null || true
+          REMOTE_HEAD=$(git rev-parse "origin/$SOURCE_BRANCH" 2>/dev/null || echo "none")
+          LOCAL_HEAD=$(git rev-parse HEAD)
+
+          if [ "$LOCAL_HEAD" = "$REMOTE_HEAD" ]; then
+            echo "Local HEAD matches remote — nothing to push"
+          else
+            # Rebase local work on top of anything the action already pushed
+            git pull --rebase origin "$SOURCE_BRANCH" 2>/dev/null || true
+            git push origin "HEAD:$SOURCE_BRANCH"
+            echo "Pushed to PR branch $SOURCE_BRANCH"
+          fi
+
+      - name: Push remaining work to tmp branch (issue context)
+        if: success() && steps.push_target.outputs.is_pr == 'false'
+        id: push_issue
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          # Re-auth — claude-code-action may have changed the remote URL
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+
+          TMP_BRANCH="${{ steps.push_target.outputs.tmp_branch }}"
+          PR_BRANCH="${{ steps.push_target.outputs.pr_branch }}"
           echo "tmp_branch=$TMP_BRANCH" >> $GITHUB_OUTPUT
-          git checkout -b "$TMP_BRANCH"
-          git push -u origin "$TMP_BRANCH"
-          echo "Pushed to $TMP_BRANCH"
+          echo "pr_branch=$PR_BRANCH" >> $GITHUB_OUTPUT
+
+          # Commit any uncommitted changes
+          CHANGES=$(git status --porcelain | grep -v '^?? output.txt$' || true)
+          if [ -n "$CHANGES" ]; then
+            git add -u
+            if [ -n "$(git diff --cached --name-only)" ]; then
+              git commit -m "chore: save unpushed changes from Claude
+
+          Co-authored-by: Claude <noreply@anthropic.com>"
+            fi
+          fi
+
+          # claude-code-action may have already pushed mid-run via push_cmd.
+          # Check if there's anything new to push before attempting.
+          git fetch origin "$TMP_BRANCH" 2>/dev/null || true
+          REMOTE_HEAD=$(git rev-parse "origin/$TMP_BRANCH" 2>/dev/null || echo "none")
+          LOCAL_HEAD=$(git rev-parse HEAD)
+
+          if [ "$LOCAL_HEAD" = "$REMOTE_HEAD" ]; then
+            echo "Local HEAD matches remote $TMP_BRANCH — nothing to push"
+          else
+            git push origin "HEAD:refs/heads/$TMP_BRANCH" --force-with-lease
+            echo "Pushed remaining work to $TMP_BRANCH"
+          fi
 
       - name: Resolve bot review threads
+        if: success()
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
           REPO: ${{ github.repository }}
@@ -156,42 +330,22 @@ jobs:
             fi
           done
 
-      - name: Extract issue number
-        id: issue
+      - name: Trigger verify-merge (issue context only)
+        if: success() && steps.push_target.outputs.is_pr == 'false'
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          ISSUE_NUM=""
-          SOURCE="${{ steps.push.outputs.source_branch }}"
-
-          # Try branch name first (claude/issue-123)
-          ISSUE_NUM=$(echo "$SOURCE" | grep -oE 'issue-[0-9]+' | grep -oE '[0-9]+' || true)
-
-          # Fall back to comment context (if commenting on an issue, not a PR)
-          if [ -z "$ISSUE_NUM" ] && [ -n "${{ github.event.issue.number }}" ]; then
-            IS_PR=$(gh api "repos/${{ github.repository }}/issues/${{ github.event.issue.number }}" \
-              --jq '.pull_request.url // empty' 2>/dev/null || echo "")
-            if [ -z "$IS_PR" ]; then
-              ISSUE_NUM=${{ github.event.issue.number }}
-            fi
-          fi
-
-          echo "number=$ISSUE_NUM" >> $GITHUB_OUTPUT
-
-      - name: Trigger verify-merge
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-        run: |
-          TMP_BRANCH="${{ steps.push.outputs.tmp_branch }}"
-          SOURCE_BRANCH="${{ steps.push.outputs.source_branch }}"
-          ISSUE_NUM="${{ steps.issue.outputs.number }}"
+          TMP_BRANCH="${{ steps.push_issue.outputs.tmp_branch }}"
+          PR_BRANCH="${{ steps.push_issue.outputs.pr_branch }}"
+          ISSUE_NUM="${{ github.event.issue.number }}"
+          DEFAULT_BRANCH="${{ github.event.repository.default_branch || 'main' }}"
 
           gh workflow run verify-merge.yml \
             --repo "${{ github.repository }}" \
-            --ref "${{ github.event.repository.default_branch }}" \
+            --ref "$DEFAULT_BRANCH" \
             -f tmp_branch="$TMP_BRANCH" \
-            -f target_branch="$SOURCE_BRANCH" \
-            -f issue_number="${ISSUE_NUM:-}" \
+            -f target_branch="$PR_BRANCH" \
+            -f issue_number="${ISSUE_NUM}" \
             -f attempt="1"
 
-          echo "Triggered verify-merge for $TMP_BRANCH -> $SOURCE_BRANCH"
+          echo "Triggered verify-merge for $TMP_BRANCH -> $PR_BRANCH"

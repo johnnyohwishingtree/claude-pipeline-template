@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write
 
 jobs:
   test:
@@ -30,11 +31,52 @@ jobs:
       #   run: npm ci
 
       - name: Run tests
+        id: tests
         run: |
-          # TODO: Replace with your test command
+          # TODO: Replace with your test commands
           echo "No tests configured yet — edit .github/workflows/test.yml"
           exit 0
           # Examples:
           # npm test
           # python -m pytest tests/ -v
           # go test ./...
+
+      - name: Notify Claude on failure
+        if: failure() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          PR_NUM=${{ github.event.pull_request.number }}
+          BRANCH="${{ github.head_ref }}"
+
+          # Only auto-fix on claude/ branches (don't spam human PRs)
+          if [[ "$BRANCH" != claude/* ]]; then
+            echo "Not a claude/ branch — skipping"
+            exit 0
+          fi
+
+          # Limit fix attempts to 3
+          FIX_COUNT=$(gh pr view "$PR_NUM" --json comments \
+            -q '[.comments[] | select(.body | contains("@claude")) | select(.body | contains("CI is failing"))] | length' 2>/dev/null || echo "0")
+
+          if [ "$FIX_COUNT" -ge 3 ]; then
+            echo "Already $FIX_COUNT fix attempts — needs human review"
+            exit 0
+          fi
+
+          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          # Identify which steps failed
+          FAILED_STEPS=$(gh run view ${{ github.run_id }} --json jobs \
+            -q '[.jobs[].steps[] | select(.conclusion == "failure") | .name] | join(", ")' 2>/dev/null || echo "unknown")
+
+          BODY="@claude CI is failing on this PR.
+
+          **Failed steps:** ${FAILED_STEPS}
+          **Run URL:** ${RUN_URL}
+
+          Use \`gh run view ${{ github.run_id }} --log-failed\` to see the full error output from the failed steps. Diagnose the root cause and fix it.
+
+          IMPORTANT: After fixing, run your project's test/lint commands to verify ALL checks pass BEFORE committing. Then git add, git commit, and git push. (Auto-fix attempt $((FIX_COUNT + 1))/3)"
+
+          gh pr comment "$PR_NUM" --body "$BODY"
