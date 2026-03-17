@@ -67,13 +67,13 @@ Go to **Settings > Secrets and variables > Actions > Variables**:
 
 ### 4. Customize for your project
 
-1. **Edit `CLAUDE.md`** -- Replace the skeleton with your project's context, architecture, and conventions
-2. **Edit workflow TODO sections** -- Update language runtime, dependencies, and test commands in:
+1. **Edit `CLAUDE.md`** — Replace the skeleton with your project's context, architecture, and conventions
+2. **Edit workflow TODO sections** — Update language runtime, dependencies, and test commands in:
    - `.github/workflows/claude.yml` (setup + allowed tools)
    - `.github/workflows/verify-merge.yml` (setup + test commands)
    - `.github/workflows/test.yml` (setup + test commands)
    - `.github/workflows/review-fix.yml` (setup + verify step)
-3. **Edit `.claude/skills/`** -- Customize or add skills relevant to your project
+3. **Edit `.claude/skills/`** — Customize or add skills relevant to your project
 
 ### 5. Configure repository settings
 
@@ -128,8 +128,8 @@ Either:
 
 Claude never pushes directly to the PR branch. Instead:
 
-1. **`claude.yml`** -- Claude works on `claude/issue-N` branch, then pushes to `tmp/claude-<run_id>`
-2. **`verify-merge.yml`** -- Runs tests on the temp branch:
+1. **`claude.yml`** — Claude works on `claude/issue-N` branch, then pushes to `tmp/claude-<run_id>`
+2. **`verify-merge.yml`** — Runs tests on the temp branch:
    - **Pass:** Merges temp into `claude/issue-N`, deletes temp, creates PR
    - **Fail:** Claude fixes with fresh context on the temp branch, re-triggers verify (up to 6 attempts)
    - **Give up:** Comments on the issue, cleans up stale branches
@@ -156,7 +156,7 @@ PR created
   -> auto-merge.yml merges when: tests pass + approved + threads resolved
 ```
 
-> **Why review-fix instead of @claude PR comments?** `claude-code-action@v1` strips Edit/Write tools when triggered from PR comments -- only read tools are allowed. `review-fix.yml` uses `workflow_dispatch` which gives Claude full tool access.
+> **Why review-fix instead of @claude PR comments?** `claude-code-action@v1` strips Edit/Write tools when triggered from PR comments — only read tools are allowed. `review-fix.yml` uses `workflow_dispatch` which gives Claude full tool access.
 
 ### Bot comment isolation
 
@@ -198,7 +198,7 @@ The Claude Code Action posts status comments ("working...", plan updates) which 
 
 ## Safety Mechanisms
 
-- **Bot isolation:** Bot status comments get separate concurrency groups -- can't cancel real runs
+- **Bot isolation:** Bot status comments get separate concurrency groups — can't cancel real runs
 - **Temp branch pattern:** Only verified code reaches the PR branch
 - **Fix attempt limit:** 6 attempts per verify-merge before giving up
 - **No-changes detection:** If Claude produces no changes, skips remaining attempts
@@ -240,9 +240,9 @@ Skills are reusable prompts that guide Claude's implementation approach. See `.c
 ### Changing the test command
 
 Update the test/lint commands in these places:
-- `test.yml` -- the CI check
-- `verify-merge.yml` -- the verify job checks
-- `review-fix.yml` -- the verify step (optional)
+- `test.yml` — the CI check
+- `verify-merge.yml` — the verify job checks
+- `review-fix.yml` — the verify step (optional)
 
 ### Changing the planner schedule
 
