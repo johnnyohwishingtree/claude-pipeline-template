@@ -1,0 +1,265 @@
+name: Review Guardian
+
+on:
+  # Trigger when CI workflows complete on a PR
+  workflow_run:
+    workflows: ["Tests"]
+    types: [completed]
+
+  # Trigger when Gemini posts a failure comment
+  issue_comment:
+    types: [created]
+
+  # Trigger when a review is submitted (to detect non-approving reviews)
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  # Fallback when Gemini posts "unable to generate" message
+  gemini-failed:
+    if: |
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request &&
+      contains(github.event.comment.body, 'Gemini is unable to generate a summary for this pull request')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Request fallback review
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          AGENT: ${{ vars.PREFERRED_AGENT || 'claude' }}
+        run: |
+          PR_NUM=${{ github.event.issue.number }}
+          echo "Gemini Code Assist failed on PR #$PR_NUM. Requesting @$AGENT review."
+
+          gh pr comment "$PR_NUM" --repo ${{ github.repository }} \
+            --body "@$AGENT Gemini Code Assist failed to review this PR. Please perform a comprehensive code review. Check for bugs, security issues, performance problems, and code quality. Post your findings as a PR review (approve if it looks good, or request changes if there are issues). This is an automated fallback."
+
+  # When a bot reviewer posts a COMMENTED review (not APPROVED), auto-approve
+  request-approval:
+    if: |
+      github.event_name == 'pull_request_review' &&
+      github.event.review.state == 'commented' &&
+      contains(fromJSON('["gemini-code-assist[bot]", "copilot[bot]"]'), github.event.review.user.login)
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Auto-approve after bot review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+          REPO: ${{ github.repository }}
+        run: |
+          PR_NUM=${{ github.event.pull_request.number }}
+
+          # Check if there's already an APPROVED review
+          HAS_APPROVAL=$(gh pr view "$PR_NUM" --repo "$REPO" --json reviews \
+            -q '[.reviews[] | select(.state == "APPROVED")] | length' 2>/dev/null || echo "0")
+
+          if [ "$HAS_APPROVAL" -gt 0 ]; then
+            echo "PR #$PR_NUM already has an approval — no action needed"
+            exit 0
+          fi
+
+          # Check if the review has critical/high-severity inline comments.
+          # Gemini posts priority badges like ![critical] and ![high] in inline
+          # review comments while submitting the overall review as COMMENTED.
+          CRITICAL_COMMENTS=$(gh api "repos/$REPO/pulls/$PR_NUM/comments" \
+            -q '[.[] | select(.body | test("!\\[(critical|high)\\]|critical|security-high|high-priority"; "i"))] | length' 2>/dev/null || echo "0")
+
+          if [ "$CRITICAL_COMMENTS" -gt 0 ]; then
+            # Check if threads are resolved — if so, the feedback was already addressed
+            OWNER=$(echo "$REPO" | cut -d/ -f1)
+            NAME=$(echo "$REPO" | cut -d/ -f2)
+            UNRESOLVED=$(gh api graphql -f query="
+              query {
+                repository(owner: \"$OWNER\", name: \"$NAME\") {
+                  pullRequest(number: $PR_NUM) {
+                    reviewThreads(first: 100) {
+                      nodes { isResolved }
+                    }
+                  }
+                }
+              }
+            " --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)] | length' 2>/dev/null || echo "0")
+
+            if [ "$UNRESOLVED" -gt 0 ]; then
+              echo "Review has $CRITICAL_COMMENTS critical/high-severity comments and $UNRESOLVED unresolved threads — NOT auto-approving"
+              echo "review-relay.yml will handle triggering Claude to fix these"
+
+              gh pr comment "$PR_NUM" --repo "$REPO" \
+                --body "Auto-approve skipped: found $CRITICAL_COMMENTS inline review comment(s) with high/critical priority badges and $UNRESOLVED unresolved thread(s). These must be addressed before the PR can be approved. review-relay.yml will handle triggering fixes."
+              exit 0
+            else
+              echo "Found $CRITICAL_COMMENTS critical/high comments but ALL threads are resolved — feedback was addressed"
+            fi
+          fi
+
+          # Wait for review-relay to process the review and potentially dispatch review-fix.
+          echo "Waiting 90s for review-relay to process..."
+          sleep 90
+
+          # Re-check: did review-relay dispatch a review-fix for this PR?
+          RELAY_POSTED=$(gh run list --repo "$REPO" --workflow review-fix.yml \
+            --json displayTitle,createdAt \
+            -q "[.[] | select(.displayTitle | contains(\"PR #${PR_NUM}\"))] | length" 2>/dev/null || echo "0")
+
+          if [ "$RELAY_POSTED" -gt 0 ]; then
+            echo "review-relay dispatched review-fix — deferring approval until fixes land"
+            exit 0
+          fi
+
+          REVIEWER="${{ github.event.review.user.login }}"
+          echo "Bot review from $REVIEWER on PR #$PR_NUM — no issues relayed, auto-approving"
+          gh pr review "$PR_NUM" --repo "$REPO" --approve \
+            --body "Auto-approved: code review provided by $REVIEWER (no critical/high issues found)."
+
+  # When Claude posts a review comment on a PR, auto-approve
+  auto-approve-after-claude:
+    if: |
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request &&
+      github.event.comment.user.login == 'claude[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Auto-approve after Claude review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          PR_NUM=${{ github.event.issue.number }}
+
+          # Only approve if Claude was asked to review (not just any Claude comment)
+          WAS_REVIEW_REQUEST=$(gh api "repos/$REPO/issues/$PR_NUM/comments" \
+            -q '[.[] | select(.body | test("perform a comprehensive code review|Please review the diff"))] | length' 2>/dev/null || echo "0")
+
+          if [ "$WAS_REVIEW_REQUEST" -eq 0 ]; then
+            echo "Claude comment on PR #$PR_NUM is not a review response — skipping"
+            exit 0
+          fi
+
+          # Check if there's already an APPROVED review
+          HAS_APPROVAL=$(gh pr view "$PR_NUM" --repo "$REPO" --json reviews \
+            -q '[.reviews[] | select(.state == "APPROVED")] | length' 2>/dev/null || echo "0")
+
+          if [ "$HAS_APPROVAL" -gt 0 ]; then
+            echo "PR #$PR_NUM already has an approval — no action needed"
+            exit 0
+          fi
+
+          # Check Claude's comment doesn't indicate problems
+          CLAUDE_BODY=$(echo '${{ toJSON(github.event.comment.body) }}' | jq -r '.')
+          if echo "$CLAUDE_BODY" | grep -qiE 'request.?changes|critical.?(bug|issue|problem)|do not merge'; then
+            echo "Claude flagged issues — NOT auto-approving"
+            exit 0
+          fi
+
+          echo "Claude reviewed PR #$PR_NUM — auto-approving"
+          gh pr review "$PR_NUM" --repo "$REPO" --approve \
+            --body "Auto-approved: code review provided by Claude."
+
+  # Check for missing reviews after CI passes
+  ensure-review:
+    if: |
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Check if PR needs review or approval
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          AGENT: ${{ vars.PREFERRED_AGENT || 'claude' }}
+          REPO: ${{ github.repository }}
+        run: |
+          BRANCH="${{ github.event.workflow_run.head_branch }}"
+          echo "CI passed for branch: $BRANCH"
+
+          PR_NUM=$(gh pr list --repo "$REPO" --head "$BRANCH" --state open \
+            --json number -q '.[0].number' 2>/dev/null || echo "")
+
+          if [ -z "$PR_NUM" ]; then
+            echo "No open PR found for branch $BRANCH"
+            exit 0
+          fi
+
+          echo "Checking reviews on PR #$PR_NUM"
+          echo "pr_num=$PR_NUM" >> $GITHUB_OUTPUT
+
+          # Check for APPROVED reviews
+          HAS_APPROVAL=$(gh pr view "$PR_NUM" --repo "$REPO" --json reviews \
+            -q '[.reviews[] | select(.state == "APPROVED")] | length' 2>/dev/null || echo "0")
+
+          if [ "$HAS_APPROVAL" -gt 0 ]; then
+            echo "PR #$PR_NUM already approved — dispatching auto-merge"
+            echo "action=dispatch-auto-merge" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Check for any formal PR reviews
+          ANY_REVIEWS=$(gh pr view "$PR_NUM" --repo "$REPO" --json reviews \
+            -q '.reviews | length' 2>/dev/null || echo "0")
+
+          if [ "$ANY_REVIEWS" -gt 0 ]; then
+            echo "PR #$PR_NUM has reviews but no approval — dispatching auto-merge for re-evaluation"
+            echo "action=dispatch-auto-merge" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # No reviews at all — check if we already requested one
+          EXISTING_REQUEST=$(gh api "repos/$REPO/issues/$PR_NUM/comments" \
+            -q '[.[] | select(.body | contains("Please perform a comprehensive code review"))] | length' 2>/dev/null || echo "0")
+
+          if [ "$EXISTING_REQUEST" -gt 0 ]; then
+            echo "Already requested a fallback review — waiting for it"
+            echo "action=none" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Wait briefly for Gemini
+          echo "No reviews found. Waiting 60s for Gemini..."
+          sleep 60
+
+          # Re-check
+          ANY_REVIEWS=$(gh pr view "$PR_NUM" --repo "$REPO" --json reviews \
+            -q '.reviews | length' 2>/dev/null || echo "0")
+
+          if [ "$ANY_REVIEWS" -gt 0 ]; then
+            echo "Review arrived during wait"
+            echo "action=dispatch-auto-merge" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "Still no reviews. Requesting fallback review."
+          echo "action=request-review" >> $GITHUB_OUTPUT
+        id: check
+
+      - name: Dispatch auto-merge for re-evaluation
+        if: steps.check.outputs.action == 'dispatch-auto-merge'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          PR_NUM=${{ steps.check.outputs.pr_num }}
+          DEFAULT_BRANCH="${{ github.event.repository.default_branch || 'main' }}"
+          gh workflow run auto-merge.yml \
+            --repo "${{ github.repository }}" \
+            --ref "$DEFAULT_BRANCH" \
+            -f pr_number="$PR_NUM" 2>/dev/null || echo "Failed to dispatch auto-merge"
+
+      - name: Request fallback review
+        if: steps.check.outputs.action == 'request-review'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          AGENT: ${{ vars.PREFERRED_AGENT || 'claude' }}
+          REPO: ${{ github.repository }}
+        run: |
+          PR_NUM=${{ steps.check.outputs.pr_num }}
+          echo "Requesting @$AGENT fallback review for PR #$PR_NUM"
+          gh pr comment "$PR_NUM" --repo "$REPO" \
+            --body "@$AGENT No code review was posted on this PR (the usual reviewer may be at quota). Please perform a comprehensive code review. Check for bugs, security issues, performance problems, and code quality. Post your findings as a PR review (approve if it looks good, or request changes if there are issues). This is an automated fallback."

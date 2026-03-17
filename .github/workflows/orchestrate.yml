@@ -3,6 +3,7 @@ name: Orchestrate Story Pipeline
 on:
   pull_request:
     types: [closed]
+    branches: [main, master]
 
 permissions:
   contents: read
@@ -11,7 +12,7 @@ permissions:
 
 jobs:
   advance-pipeline:
-    if: github.event.pull_request.merged == true
+    if: github.event.pull_request.merged == true && vars.PIPELINE_ENABLED != 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -85,7 +86,7 @@ jobs:
               -q '.[0].number')
             if [ -n "$EPIC_NUM" ] && [ "$EPIC_NUM" != "null" ]; then
               gh issue comment "$EPIC_NUM" --repo ${{ github.repository }} \
-                --body "All stories in this epic have been completed."
+                --body "All stories in this epic have been completed. Review the merged PRs for the full implementation."
               gh issue close "$EPIC_NUM" --repo ${{ github.repository }}
             fi
             exit 0
@@ -110,6 +111,11 @@ jobs:
           if [ "$FAILED" -ge 3 ]; then
             echo "WARNING: 3+ recent PRs failed. Pausing pipeline."
             echo "safe=false" >> $GITHUB_OUTPUT
+            gh issue create \
+              --repo ${{ github.repository }} \
+              --title "Pipeline paused: consecutive PR failures" \
+              --body "The story orchestrator detected 3+ consecutive unmerged PRs. Please review recent failures and restart the pipeline manually by commenting @claude on the next pending story." \
+              --label "bug"
           else
             echo "safe=true" >> $GITHUB_OUTPUT
           fi
@@ -118,12 +124,13 @@ jobs:
         if: steps.next.outputs.found == 'true' && steps.safety.outputs.safe == 'true'
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
+          AGENT: ${{ vars.PREFERRED_AGENT || 'claude' }}
         run: |
           NEXT=${{ steps.next.outputs.next_story }}
-          echo "Triggering story #$NEXT"
+          echo "Triggering story #$NEXT using @$AGENT"
 
           gh issue edit "$NEXT" --repo ${{ github.repository }} \
             --remove-label "pending" --add-label "in-progress" || true
 
           gh issue comment "$NEXT" --repo ${{ github.repository }} \
-            --body "@claude Implement this story. Read CLAUDE.md for project context and follow the skill referenced in this issue. IMPORTANT: Commit and push frequently. Run tests before your final commit."
+            --body "@$AGENT Implement this story. Read CLAUDE.md for project context and follow the skill referenced in this issue. IMPORTANT: After completing each acceptance criterion, git add, git commit, and git push before moving on. Run tests before your final commit. Create a PR with 'Closes #$NEXT' in the body when done."
