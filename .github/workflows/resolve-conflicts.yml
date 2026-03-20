@@ -1,13 +1,13 @@
 name: Resolve Merge Conflicts
 
-# Detects open PRs with merge conflicts against the default branch and resolves them.
+# Detects open PRs with merge conflicts against master and resolves them.
 # Triggered:
-#   - On push to default branch (proactive: check all open PRs)
+#   - On push to master (proactive: check all open PRs)
 #   - Via workflow_dispatch (targeted: resolve a specific PR)
 
 on:
   push:
-    branches: [main, master]
+    branches: [master]
 
   workflow_dispatch:
     inputs:
@@ -38,8 +38,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_PAT }}
           REPO: ${{ github.repository }}
         run: |
-          DEFAULT_BRANCH="${{ github.event.repository.default_branch || 'main' }}"
-
           if [ -n "${{ inputs.pr_number }}" ]; then
             # Targeted: just check the specified PR
             MERGEABLE=$(gh pr view "${{ inputs.pr_number }}" --repo "$REPO" \
@@ -53,8 +51,8 @@ jobs:
               echo "prs=[]" >> $GITHUB_OUTPUT
             fi
           else
-            # Proactive: check all open PRs targeting default branch
-            PRS=$(gh pr list --repo "$REPO" --base "$DEFAULT_BRANCH" --state open \
+            # Proactive: check all open PRs targeting master
+            PRS=$(gh pr list --repo "$REPO" --base master --state open \
               --json number,headRefName,mergeable \
               -q '[.[] | select(.mergeable == "CONFLICTING") | {number: .number, branch: .headRefName}]' \
               2>/dev/null || echo "[]")
@@ -80,26 +78,25 @@ jobs:
           fetch-depth: 0
 
       - name: Configure git and auth
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-        run: |
-          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
-          git config user.name "Claude CI"
-          git config user.email "claude-ci@users.noreply.github.com"
+        uses: ./.github/actions/setup-auth
+        with:
+          token: ${{ secrets.GH_PAT }}
 
-      - name: Merge default branch and resolve conflicts
+      - name: Setup pipeline TypeScript
+        uses: ./.github/actions/setup-pipeline-ts
+
+      - name: Merge master and resolve conflicts
         id: merge
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          DEFAULT_BRANCH="${{ github.event.repository.default_branch || 'main' }}"
-          git fetch origin "$DEFAULT_BRANCH"
+          git fetch origin master
           PR_NUM="${{ matrix.pr.number }}"
           BRANCH="${{ matrix.pr.branch }}"
 
           # Attempt the merge
-          if git merge "origin/$DEFAULT_BRANCH" --no-edit 2>/dev/null; then
-            echo "Merged $DEFAULT_BRANCH cleanly — no conflicts after all"
+          if git merge origin/master --no-edit 2>/dev/null; then
+            echo "Merged master cleanly — no conflicts after all"
             echo "resolved=clean" >> $GITHUB_OUTPUT
           else
             echo "Merge conflicts detected — resolving"
@@ -110,22 +107,23 @@ jobs:
             echo "$CONFLICTING"
 
             # Determine which files belong to this PR's story vs infrastructure
-            PR_FILES=$(git diff --name-only "origin/$DEFAULT_BRANCH"..."origin/$BRANCH" 2>/dev/null || echo "")
+            # Files changed by this PR branch vs master
+            PR_FILES=$(git diff --name-only origin/master..."origin/$BRANCH" 2>/dev/null || echo "")
 
             RESOLVED_COUNT=0
             MANUAL_NEEDED=""
 
             for file in $CONFLICTING; do
-              # Infrastructure files: take default branch's version
-              if echo "$file" | grep -qE '^\.(github|claude)/|^CLAUDE\.md'; then
-                echo "Infrastructure file: $file — taking $DEFAULT_BRANCH's version"
-                git checkout "origin/$DEFAULT_BRANCH" -- "$file"
+              # Infrastructure files: take master's version
+              if echo "$file" | grep -qE '^\.(github|claude)/|^docs/pipeline|^CLAUDE\.md'; then
+                echo "Infrastructure file: $file — taking master's version"
+                git checkout origin/master -- "$file"
                 git add "$file"
                 RESOLVED_COUNT=$((RESOLVED_COUNT + 1))
-              # Lock files: take default branch's version
-              elif echo "$file" | grep -qE 'lock\.(yaml|json)$'; then
-                echo "Lock file: $file — taking $DEFAULT_BRANCH's version"
-                git checkout "origin/$DEFAULT_BRANCH" -- "$file"
+              # Lock files: take master's version
+              elif echo "$file" | grep -qE 'lock\.(yaml|json)$|Podfile\.lock$'; then
+                echo "Lock file: $file — taking master's version"
+                git checkout origin/master -- "$file"
                 git add "$file"
                 RESOLVED_COUNT=$((RESOLVED_COUNT + 1))
               # Files this PR changed: take the PR's version
@@ -152,34 +150,37 @@ jobs:
             fi
           fi
 
-      - name: Push resolved branch
+      - name: Push resolved branch and dispatch CI
         if: steps.merge.outputs.resolved == 'auto' || steps.merge.outputs.resolved == 'clean'
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           git push origin HEAD
           echo "Pushed conflict resolution for PR #${{ matrix.pr.number }}"
+          # Dispatch CI explicitly — GitHub pull_request events are unreliable
+          BRANCH="${{ matrix.pr.branch }}"
+          npx tsx .github/scripts/lib/cli/pipeline.ts dispatch "test.yml" --ref "$BRANCH"
+          echo "Dispatched CI for $BRANCH"
 
       - name: Comment on PR (resolved)
         if: steps.merge.outputs.resolved == 'auto' || steps.merge.outputs.resolved == 'clean'
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
-          DEFAULT_BRANCH="${{ github.event.repository.default_branch || 'main' }}"
           TYPE="${{ steps.merge.outputs.resolved }}"
           if [ "$TYPE" = "clean" ]; then
-            MSG="Merged latest $DEFAULT_BRANCH (no conflicts)."
+            MSG="Merged latest master (no conflicts)."
           else
-            MSG="Auto-resolved merge conflicts with $DEFAULT_BRANCH (${{ steps.merge.outputs.resolved_count }} files). Infrastructure/lock files took $DEFAULT_BRANCH's version; PR-modified files kept this branch's version."
+            MSG="Auto-resolved merge conflicts with master (${{ steps.merge.outputs.resolved_count }} files). Infrastructure/lock files took master's version; PR-modified files kept this branch's version."
           fi
-          gh pr comment "${{ matrix.pr.number }}" --repo "${{ github.repository }}" \
-            --body "$MSG" 2>/dev/null || echo "Failed to post comment"
+          npx tsx .github/scripts/lib/cli/pipeline.ts comment "${{ matrix.pr.number }}" "$MSG"
 
       - name: Comment on PR (manual needed)
         if: steps.merge.outputs.resolved == 'manual'
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
-          gh pr comment "${{ matrix.pr.number }}" --repo "${{ github.repository }}" \
-            --body "Could not auto-resolve merge conflicts. Files needing manual resolution: \`${{ steps.merge.outputs.manual_files }}\`" \
-            2>/dev/null || echo "Failed to post comment"
+          npx tsx .github/scripts/lib/cli/pipeline.ts comment "${{ matrix.pr.number }}" "Could not auto-resolve merge conflicts. Files needing manual resolution: \`${{ steps.merge.outputs.manual_files }}\`"

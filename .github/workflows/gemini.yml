@@ -1,0 +1,171 @@
+name: Gemini Code
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+
+jobs:
+  gemini:
+    if: |
+      (contains(github.event.comment.body, '@gemini') || contains(github.event.comment.body, '@gemini-code-assist')) &&
+      github.event.comment.user.type != 'Bot' &&
+      !contains(github.event.comment.body, 'Gemini is unable to generate a summary') &&
+      (github.event.issue != null || github.event.pull_request != null) &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup pipeline TypeScript
+        uses: ./.github/actions/setup-pipeline-ts
+
+      - name: Switch to PR branch if applicable
+        if: github.event.issue.pull_request || github.event.pull_request
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          if [ -n "${{ github.event.pull_request.number }}" ]; then
+            PR_NUM=${{ github.event.pull_request.number }}
+          else
+            PR_NUM=${{ github.event.issue.number }}
+          fi
+          PR_BRANCH=$(gh pr view "$PR_NUM" --json headRefName -q '.headRefName')
+          echo "Switching to PR branch: $PR_BRANCH"
+          git checkout "$PR_BRANCH"
+
+      - name: Create branch for new issue
+        if: github.event.issue && !github.event.issue.pull_request
+        run: |
+          ISSUE_NUM=${{ github.event.issue.number }}
+          BRANCH_NAME="gemini/issue-$ISSUE_NUM-$(date +%Y%m%d-%H%M)"
+          git checkout -b "$BRANCH_NAME"
+          echo "Created branch: $BRANCH_NAME"
+          echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
+        id: branch
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install pnpm
+        run: npm install -g pnpm
+
+      - name: Install dependencies
+        run: |
+          if [ -f pnpm-lock.yaml ]; then
+            pnpm install --frozen-lockfile || pnpm install --no-frozen-lockfile
+          elif [ -f package.json ]; then
+            pnpm install
+          else
+            echo "No package.json yet — skipping install"
+          fi
+
+      - name: Run Gemini CLI
+        id: gemini
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          # Save comment body to a file to avoid shell expansion issues
+          echo "$COMMENT_BODY" > comment.txt
+          
+          # Extract the part after the mention
+          # Handles both @gemini and @gemini-code-assist
+          PROMPT=$(sed -n 's/.*@gemini-code-assist //p' comment.txt || sed -n 's/.*@gemini //p' comment.txt || sed -n 's/.*@gemini//p' comment.txt | head -n 1)
+          
+          if [ -z "$PROMPT" ]; then
+            # If nothing after @gemini, check if the comment IS just @gemini
+            if grep -q "@gemini" comment.txt; then
+              PROMPT="Follow the instructions in the issue/PR description."
+            else
+              echo "No prompt found after @gemini"
+              exit 0
+            fi
+          fi
+          
+          echo "Running Gemini with extracted prompt: $PROMPT"
+          
+          # Run gemini-cli in headless mode
+          npx -y @google/gemini-cli --headless "$PROMPT"
+
+      - name: Push uncommitted changes
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          export GIT_USER_NAME="Gemini CLI"
+          export GIT_USER_EMAIL="gemini-cli@google.com"
+          npx tsx .github/scripts/lib/cli/pipeline.ts setup-git-auth
+
+          BRANCH=$(git branch --show-current)
+          echo "Current branch: $BRANCH"
+
+          if npx tsx .github/scripts/lib/cli/pipeline.ts commit "Auto-commit: save Gemini's unpushed changes
+
+          Gemini edited files but did not commit/push before the session ended.
+          This auto-commit preserves the work so it isn't lost." "Gemini <noreply@google.com>"; then
+            git push origin HEAD
+            echo "Auto-pushed uncommitted changes to $BRANCH"
+          else
+            echo "No uncommitted changes — Gemini pushed properly"
+          fi
+
+      - name: Auto-create PR if branch has commits
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          BRANCH=$(git branch --show-current)
+          
+          AHEAD=$(git rev-list --count origin/master.."HEAD" 2>/dev/null || echo "0")
+          if [ "$AHEAD" -eq 0 ]; then
+            echo "Branch $BRANCH has no commits ahead of master — skipping PR"
+            exit 0
+          fi
+
+          EXISTING=$(gh pr list --head "$BRANCH" --state open --json number -q '.[0].number' 2>/dev/null || true)
+          if [ -n "$EXISTING" ]; then
+            echo "PR #$EXISTING already exists for $BRANCH"
+            exit 0
+          fi
+
+          ISSUE_NUM=$(echo "$BRANCH" | grep -oE 'issue-[0-9]+' | grep -oE '[0-9]+' || true)
+
+          if [ -z "$ISSUE_NUM" ] && [ -n "${{ github.event.issue.number }}" ]; then
+            IS_PR=$(gh api "repos/${{ github.repository }}/issues/${{ github.event.issue.number }}" \
+              --jq '.pull_request.url // empty' 2>/dev/null || echo "")
+            if [ -z "$IS_PR" ]; then
+              ISSUE_NUM=${{ github.event.issue.number }}
+            fi
+          fi
+
+          if [ -n "$ISSUE_NUM" ]; then
+            ISSUE_TITLE=$(gh issue view "$ISSUE_NUM" --json title -q '.title' 2>/dev/null || echo "")
+            PR_TITLE="${ISSUE_TITLE:-Implement issue #$ISSUE_NUM}"
+            PR_BODY="Closes #${ISSUE_NUM}
+
+          Autonomously implemented by Gemini CLI via GitHub Actions."
+          else
+            PR_TITLE="Changes from Gemini CLI"
+            PR_BODY="Autonomously implemented by Gemini CLI via GitHub Actions."
+          fi
+
+          gh pr create \
+            --head "$BRANCH" \
+            --base master \
+            --title "$PR_TITLE" \
+            --body "$PR_BODY"
+
+          echo "PR created for branch $BRANCH"

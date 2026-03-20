@@ -1,0 +1,25 @@
+{
+  "name": "@borderly/pipeline-scripts",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "evaluate-merge-gate": "tsx lib/cli/evaluate-merge-gate.ts",
+    "activity": "tsx lib/cli/activity.ts"
+  },
+  "dependencies": {
+    "@octokit/graphql": "^8.2.1",
+    "@octokit/rest": "^21.1.1"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^25.5.0",
+    "js-yaml": "^4.1.1",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^3.1.0"
+  }
+}

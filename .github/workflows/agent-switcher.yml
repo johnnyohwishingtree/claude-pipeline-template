@@ -1,0 +1,51 @@
+name: Agent Switcher
+
+on:
+  workflow_dispatch:
+    inputs:
+      agent:
+        description: 'Select the preferred agent for the story pipeline'
+        required: true
+        default: 'claude'
+        type: choice
+        options:
+          - claude
+          - gemini
+  issue_comment:
+    types: [created]
+
+jobs:
+  switch:
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issue_comment' &&
+       (contains(github.event.comment.body, '@gemini use gemini') ||
+        contains(github.event.comment.body, '@gemini use claude')) &&
+       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine New Agent
+        id: agent
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "choice=${{ github.event.inputs.agent }}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.event.comment.body }}" == *"use gemini"* ]]; then
+            echo "choice=gemini" >> $GITHUB_OUTPUT
+          else
+            echo "choice=claude" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Update PREFERRED_AGENT variable
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          NEW_AGENT: ${{ steps.agent.outputs.choice }}
+        run: |
+          echo "Switching preferred agent to: $NEW_AGENT"
+          
+          # Use gh variable set to update the repository variable
+          gh variable set PREFERRED_AGENT --body "$NEW_AGENT" --repo ${{ github.repository }}
+          
+          if [[ "${{ github.event_name }}" == "issue_comment" ]]; then
+            gh issue comment ${{ github.event.issue.number }} --repo ${{ github.repository }} \
+              --body "✅ Preferred agent has been switched to **$NEW_AGENT**. Future story orchestrations will use @$NEW_AGENT."
+          fi

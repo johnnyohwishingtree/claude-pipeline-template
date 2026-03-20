@@ -25,7 +25,6 @@ jobs:
       github.event.review.state == 'commented'
     runs-on: ubuntu-latest
     timeout-minutes: 2
-
     steps:
       - name: Check reviewer and relay count
         id: check
@@ -95,22 +94,22 @@ jobs:
           COUNT=$(echo "$COMMENTS" | jq 'length')
           echo "Found $COUNT inline comments from $REVIEWER"
 
-          # Build the review summary
-          SUMMARY=""
-          if [ "$COUNT" -gt 0 ]; then
-            SUMMARY=$(echo "$COMMENTS" | jq -r '.[] | "- **\(.path)** (line \(.line // "N/A")): \(.body)"' | head -15)
+          # Only dispatch review-fix when there are actual inline comments.
+          # A review body summary alone (which Gemini always includes) is not
+          # actionable and causes a deadlock: request-approval defers because
+          # review-fix is "active", but review-fix produces no changes.
+          if [ "$COUNT" -eq 0 ]; then
+            echo "No inline comments to fix — skipping review-fix dispatch"
+            echo "has_feedback=false" >> $GITHUB_OUTPUT
+            exit 0
           fi
+
+          SUMMARY=$(echo "$COMMENTS" | jq -r '.[] | "- **\(.path)** (line \(.line // "N/A")): \(.body)"' | head -15)
 
           if [ -n "$REVIEW_BODY" ]; then
             SUMMARY="General feedback: ${REVIEW_BODY}
 
           ${SUMMARY}"
-          fi
-
-          if [ -z "$SUMMARY" ]; then
-            echo "No review comments or body to relay"
-            echo "has_feedback=false" >> $GITHUB_OUTPUT
-            exit 0
           fi
 
           echo "has_feedback=true" >> $GITHUB_OUTPUT
@@ -127,8 +126,21 @@ jobs:
         env:
           SUMMARY: ${{ steps.comments.outputs.summary }}
         run: |
-          # Write to file to avoid shell metacharacter issues
+          # Write to file to avoid shell metacharacter issues (review text has parentheses, backticks, etc.)
           printf '%s' "$SUMMARY" > /tmp/review_summary_dispatch.txt
+
+      - name: Checkout scripts
+        if: steps.check.outputs.should_relay == 'true' && steps.comments.outputs.has_feedback == 'true'
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            .github/scripts
+            .github/actions
+          sparse-checkout-cone-mode: false
+
+      - name: Setup pipeline TypeScript
+        if: steps.check.outputs.should_relay == 'true' && steps.comments.outputs.has_feedback == 'true'
+        uses: ./.github/actions/setup-pipeline-ts
 
       - name: Dispatch review-fix workflow
         if: steps.check.outputs.should_relay == 'true' && steps.comments.outputs.has_feedback == 'true'
@@ -141,8 +153,7 @@ jobs:
           ROUND=${{ steps.check.outputs.relay_round }}
           SUMMARY=$(cat /tmp/review_summary_dispatch.txt)
 
-          gh workflow run review-fix.yml \
-            --repo "${{ github.repository }}" \
+          npx tsx .github/scripts/lib/cli/pipeline.ts dispatch "review-fix.yml" \
             --ref "$PR_BRANCH" \
             -f pr_number="$PR_NUM" \
             -f pr_branch="$PR_BRANCH" \
@@ -154,6 +165,4 @@ jobs:
 
           # Post a status comment on the PR
           RUN_URL="https://github.com/${{ github.repository }}/actions/workflows/review-fix.yml"
-          gh pr comment "$PR_NUM" --repo "${{ github.repository }}" \
-            --body "Review feedback from $REVIEWER detected (round $ROUND/3). [Dispatched review-fix workflow]($RUN_URL) to address it." \
-            2>/dev/null || true
+          npx tsx .github/scripts/lib/cli/pipeline.ts comment "$PR_NUM" "Review feedback from $REVIEWER detected (round $ROUND/3). [Dispatched review-fix workflow]($RUN_URL) to address it."

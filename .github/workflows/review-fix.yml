@@ -4,6 +4,9 @@ run-name: "Review fix: PR #${{ inputs.pr_number }} (round ${{ inputs.round }})"
 # Runs Claude with full permissions to fix code review feedback on a PR.
 # Triggered by review-relay via workflow_dispatch instead of @claude PR comment,
 # because claude-code-action@v1 restricts tools (no Edit/Write) in PR comment context.
+#
+# After Claude addresses review feedback, pushes and dispatches verify-and-fix.yml
+# for quality checks with retry capability (up to 3 fix attempts).
 
 on:
   workflow_dispatch:
@@ -40,12 +43,12 @@ permissions:
   pull-requests: write
   issues: write
   id-token: write
+  actions: write
 
 jobs:
   fix:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-
     steps:
       - name: Checkout PR branch
         uses: actions/checkout@v4
@@ -54,14 +57,15 @@ jobs:
           fetch-depth: 0
 
       - name: Configure git and auth
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-        run: |
-          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
-          git config user.name "Claude CI"
-          git config user.email "claude-ci@users.noreply.github.com"
+        uses: ./.github/actions/setup-auth
+        with:
+          token: ${{ secrets.GH_PAT }}
 
-      # TODO: Set up your language runtime and install dependencies here.
+      - name: Setup pipeline TypeScript
+        uses: ./.github/actions/setup-pipeline-ts
+
+      - name: Set up Node and pnpm
+        uses: ./.github/actions/setup-node
 
       - name: Run Claude to fix review feedback
         id: claude
@@ -79,10 +83,13 @@ jobs:
             1. Read each review comment carefully
             2. If the feedback is valid, fix the code using the Edit tool
             3. If the feedback is incorrect or not applicable, reply on the PR explaining why
-            4. After fixing, run your project's test/lint commands to verify no regressions
-            5. Git add, commit, and push your changes
-
-            Push command: git push origin HEAD
+            4. After fixing, run `pnpm typecheck` and `pnpm test` to verify no regressions
+            5. If the review feedback points to a recurring pattern, prevent it from happening again:
+               a. **Syntax/style pattern** (e.g., "avoid `as any`", "use optional chaining") -> add an ESLint rule in `.eslintrc.js` as a warning
+               b. **Architecture/convention** (e.g., "components shouldn't import stores", "extract hooks from fat screens") -> add or update a rule in `.claude/rules/`
+               c. **Structural check** (e.g., "files too long", "missing checkout step") -> add a vitest test in `.github/scripts/__tests__/`
+               Only do this if the pattern is general enough to apply beyond this one PR.
+            6. Git add and commit your changes — do NOT push (the workflow will push after verification)
           show_full_output: true
           claude_args: --allowedTools "Edit" "MultiEdit" "Glob" "Grep" "LS" "Read" "Write" "Bash(*)"
           settings: |
@@ -90,98 +97,36 @@ jobs:
               "maxTurns": 20
             }
 
-      # TODO: Uncomment and customize the verify step for your project
-      # - name: Verify fixes pass checks
-      #   id: verify
-      #   run: |
-      #     echo "=== Tests ==="
-      #     if ! npm test 2>&1; then
-      #       echo "::error::Tests failed after review fix — not pushing"
-      #       echo "pass=false" >> $GITHUB_OUTPUT
-      #       exit 0
-      #     fi
-      #     echo "pass=true" >> $GITHUB_OUTPUT
-
       # Resolve threads BEFORE pushing so that when the push triggers
       # auto-merge.yml (via pull_request: synchronize), threads are
-      # already resolved and the merge gate passes.
+      # already resolved and the merge gate passes on first eval.
       - name: Resolve review threads
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
-          REPO: ${{ github.repository }}
         run: |
-          PR_NUM=${{ inputs.pr_number }}
-          OWNER=$(echo "$REPO" | cut -d/ -f1)
-          NAME=$(echo "$REPO" | cut -d/ -f2)
-
-          echo "Resolving review threads on PR #$PR_NUM"
-
-          THREAD_IDS=$(gh api graphql -f query="
-            query {
-              repository(owner: \"$OWNER\", name: \"$NAME\") {
-                pullRequest(number: $PR_NUM) {
-                  reviewThreads(first: 100) {
-                    nodes { id isResolved }
-                  }
-                }
-              }
-            }
-          " --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false) | .id' 2>/dev/null || echo "")
-
-          if [ -z "$THREAD_IDS" ]; then
-            echo "No unresolved review threads"
-            exit 0
-          fi
-
-          echo "$THREAD_IDS" | while read -r TID; do
-            if [ -n "$TID" ]; then
-              gh api graphql -f query="
-                mutation {
-                  resolveReviewThread(input: {threadId: \"$TID\"}) {
-                    thread { isResolved }
-                  }
-                }
-              " 2>/dev/null && echo "Resolved thread $TID" || echo "Failed to resolve $TID"
-            fi
-          done
-
-          echo "Resolved all review threads on PR #$PR_NUM"
+          echo "Resolving review threads on PR #${{ inputs.pr_number }}"
+          npx tsx .github/scripts/lib/cli/pipeline.ts resolve-all-threads "${{ inputs.pr_number }}" "${{ github.repository }}"
 
       - name: Push changes
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+          npx tsx .github/scripts/lib/cli/pipeline.ts setup-git-auth
 
-          # Commit any uncommitted changes
-          CHANGES=$(git status --porcelain | grep -v '^?? output.txt$' || true)
-          if [ -n "$CHANGES" ]; then
-            git add -u
-            if [ -n "$(git diff --cached --name-only)" ]; then
-              git commit -m "fix: address review feedback (round ${{ inputs.round }})
+          npx tsx .github/scripts/lib/cli/pipeline.ts commit "fix: address review feedback (round ${{ inputs.round }})" || true
+          npx tsx .github/scripts/lib/cli/pipeline.ts push "${{ inputs.pr_branch }}"
 
-          Co-authored-by: Claude <noreply@anthropic.com>"
-            fi
-          fi
-
-          # Push if we have new commits
-          git fetch origin "${{ inputs.pr_branch }}" 2>/dev/null || true
-          LOCAL_HEAD=$(git rev-parse HEAD)
-          REMOTE_HEAD=$(git rev-parse "origin/${{ inputs.pr_branch }}" 2>/dev/null || echo "none")
-
-          if [ "$LOCAL_HEAD" = "$REMOTE_HEAD" ]; then
-            echo "No new changes to push"
-          else
-            git pull --rebase origin "${{ inputs.pr_branch }}" 2>/dev/null || true
-            git push origin "HEAD:${{ inputs.pr_branch }}"
-            echo "Pushed review fixes to ${{ inputs.pr_branch }}"
-          fi
-
-      - name: Comment on PR
+      - name: Comment and dispatch verification
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          gh pr comment "${{ inputs.pr_number }}" --repo "${{ github.repository }}" \
-            --body "Review fix round ${{ inputs.round }}/3 complete. Review threads resolved. [View run]($RUN_URL)" \
-            2>/dev/null || echo "Failed to post comment"
+          npx tsx .github/scripts/lib/cli/pipeline.ts comment "${{ inputs.pr_number }}" "Review fix round ${{ inputs.round }}/3 complete. Review threads resolved. Dispatching verification with retry. [View run]($RUN_URL)"
+
+          npx tsx .github/scripts/lib/cli/pipeline.ts dispatch "verify-and-fix.yml" \
+            -f branch="${{ inputs.pr_branch }}" \
+            -f issue_number="${{ inputs.pr_number }}" \
+            -f checks="all" \
+            -f fix_enabled="true" \
+            -f max_attempts="3" \
+            -f fix_context="This branch is PR #${{ inputs.pr_number }}. Review feedback was addressed in round ${{ inputs.round }}/3. Fix any remaining check failures without reverting the review fixes."

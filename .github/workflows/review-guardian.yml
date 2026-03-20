@@ -3,7 +3,7 @@ name: Review Guardian
 on:
   # Trigger when CI workflows complete on a PR
   workflow_run:
-    workflows: ["Tests"]
+    workflows: ["Tests", "E2E Smoke Tests"]
     types: [completed]
 
   # Trigger when Gemini posts a failure comment
@@ -48,75 +48,66 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
+      - name: Checkout scripts
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            .github/scripts
+            .github/actions
+          sparse-checkout-cone-mode: false
+
+      - name: Setup pipeline TypeScript
+        uses: ./.github/actions/setup-pipeline-ts
+
       - name: Auto-approve after bot review
         env:
           GH_TOKEN: ${{ github.token }}
           GH_PAT: ${{ secrets.GH_PAT }}
-          REPO: ${{ github.repository }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           PR_NUM=${{ github.event.pull_request.number }}
+          REVIEWER="${{ github.event.review.user.login }}"
+          REPO="${{ github.repository }}"
 
-          # Check if there's already an APPROVED review
-          HAS_APPROVAL=$(gh pr view "$PR_NUM" --repo "$REPO" --json reviews \
-            -q '[.reviews[] | select(.state == "APPROVED")] | length' 2>/dev/null || echo "0")
+          # Phase 1: Pre-wait decision
+          DECISION=$(npx tsx .github/scripts/lib/cli/pipeline.ts guardian-bot-review "$PR_NUM" "$REVIEWER")
+          ACTION=$(echo "$DECISION" | jq -r '.action')
 
-          if [ "$HAS_APPROVAL" -gt 0 ]; then
-            echo "PR #$PR_NUM already has an approval — no action needed"
-            exit 0
-          fi
-
-          # Check if the review has critical/high-severity inline comments.
-          # Gemini posts priority badges like ![critical] and ![high] in inline
-          # review comments while submitting the overall review as COMMENTED.
-          CRITICAL_COMMENTS=$(gh api "repos/$REPO/pulls/$PR_NUM/comments" \
-            -q '[.[] | select(.body | test("!\\[(critical|high)\\]|critical|security-high|high-priority"; "i"))] | length' 2>/dev/null || echo "0")
-
-          if [ "$CRITICAL_COMMENTS" -gt 0 ]; then
-            # Check if threads are resolved — if so, the feedback was already addressed
-            OWNER=$(echo "$REPO" | cut -d/ -f1)
-            NAME=$(echo "$REPO" | cut -d/ -f2)
-            UNRESOLVED=$(gh api graphql -f query="
-              query {
-                repository(owner: \"$OWNER\", name: \"$NAME\") {
-                  pullRequest(number: $PR_NUM) {
-                    reviewThreads(first: 100) {
-                      nodes { isResolved }
-                    }
-                  }
-                }
-              }
-            " --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)] | length' 2>/dev/null || echo "0")
-
-            if [ "$UNRESOLVED" -gt 0 ]; then
-              echo "Review has $CRITICAL_COMMENTS critical/high-severity comments and $UNRESOLVED unresolved threads — NOT auto-approving"
-              echo "review-relay.yml will handle triggering Claude to fix these"
-
-              gh pr comment "$PR_NUM" --repo "$REPO" \
-                --body "Auto-approve skipped: found $CRITICAL_COMMENTS inline review comment(s) with high/critical priority badges and $UNRESOLVED unresolved thread(s). These must be addressed before the PR can be approved. review-relay.yml will handle triggering fixes."
+          case "$ACTION" in
+            already-approved)
+              echo "PR #$PR_NUM already has an approval — no action needed"
               exit 0
-            else
-              echo "Found $CRITICAL_COMMENTS critical/high comments but ALL threads are resolved — feedback was addressed"
-            fi
-          fi
+              ;;
+            defer-critical)
+              CRITICAL=$(echo "$DECISION" | jq -r '.criticalCount')
+              UNRESOLVED=$(echo "$DECISION" | jq -r '.unresolvedCount')
+              echo "Review has $CRITICAL critical/high comments and $UNRESOLVED unresolved threads — NOT auto-approving"
+              npx tsx .github/scripts/lib/cli/pipeline.ts comment "$PR_NUM" "Auto-approve skipped: found $CRITICAL inline review comment(s) with high/critical priority badges and $UNRESOLVED unresolved thread(s). These must be addressed before the PR can be approved. review-relay.yml will handle triggering fixes." "$REPO"
+              exit 0
+              ;;
+          esac
 
-          # Wait for review-relay to process the review and potentially dispatch review-fix.
+          # Phase 2: Wait for review-relay
           echo "Waiting 90s for review-relay to process..."
           sleep 90
 
-          # Re-check: did review-relay dispatch a review-fix for this PR?
-          RELAY_POSTED=$(gh run list --repo "$REPO" --workflow review-fix.yml \
-            --json displayTitle,createdAt \
-            -q "[.[] | select(.displayTitle | contains(\"PR #${PR_NUM}\"))] | length" 2>/dev/null || echo "0")
+          # Phase 3: Post-wait decision
+          POST_DECISION=$(npx tsx .github/scripts/lib/cli/pipeline.ts guardian-post-wait "$PR_NUM")
+          POST_ACTION=$(echo "$POST_DECISION" | jq -r '.action')
 
-          if [ "$RELAY_POSTED" -gt 0 ]; then
-            echo "review-relay dispatched review-fix — deferring approval until fixes land"
-            exit 0
-          fi
+          case "$POST_ACTION" in
+            defer-review-fix-active)
+              echo "review-fix.yml is active for PR #$PR_NUM — deferring approval"
+              exit 0
+              ;;
+            defer-relay-posted)
+              echo "review-relay dispatched fixes for PR #$PR_NUM — deferring approval"
+              exit 0
+              ;;
+          esac
 
-          REVIEWER="${{ github.event.review.user.login }}"
           echo "Bot review from $REVIEWER on PR #$PR_NUM — no issues relayed, auto-approving"
-          gh pr review "$PR_NUM" --repo "$REPO" --approve \
-            --body "Auto-approved: code review provided by $REVIEWER (no critical/high issues found)."
+          npx tsx .github/scripts/lib/cli/pipeline.ts approve-and-merge "$PR_NUM" "Auto-approved: code review provided by $REVIEWER (no critical/high issues found)." "$REPO"
 
   # When Claude posts a review comment on a PR, auto-approve
   auto-approve-after-claude:
@@ -127,41 +118,102 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
+      - name: Checkout scripts
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            .github/scripts
+            .github/actions
+          sparse-checkout-cone-mode: false
+
+      - name: Setup pipeline TypeScript
+        uses: ./.github/actions/setup-pipeline-ts
+
       - name: Auto-approve after Claude review
         env:
           GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           PR_NUM=${{ github.event.issue.number }}
-
-          # Only approve if Claude was asked to review (not just any Claude comment)
-          WAS_REVIEW_REQUEST=$(gh api "repos/$REPO/issues/$PR_NUM/comments" \
-            -q '[.[] | select(.body | test("perform a comprehensive code review|Please review the diff"))] | length' 2>/dev/null || echo "0")
-
-          if [ "$WAS_REVIEW_REQUEST" -eq 0 ]; then
-            echo "Claude comment on PR #$PR_NUM is not a review response — skipping"
-            exit 0
-          fi
-
-          # Check if there's already an APPROVED review
-          HAS_APPROVAL=$(gh pr view "$PR_NUM" --repo "$REPO" --json reviews \
-            -q '[.reviews[] | select(.state == "APPROVED")] | length' 2>/dev/null || echo "0")
-
-          if [ "$HAS_APPROVAL" -gt 0 ]; then
-            echo "PR #$PR_NUM already has an approval — no action needed"
-            exit 0
-          fi
-
-          # Check Claude's comment doesn't indicate problems
+          REPO="${{ github.repository }}"
           CLAUDE_BODY=$(echo '${{ toJSON(github.event.comment.body) }}' | jq -r '.')
-          if echo "$CLAUDE_BODY" | grep -qiE 'request.?changes|critical.?(bug|issue|problem)|do not merge'; then
-            echo "Claude flagged issues — NOT auto-approving"
+
+          DECISION=$(npx tsx .github/scripts/lib/cli/pipeline.ts guardian-claude-review "$PR_NUM" "$CLAUDE_BODY")
+          ACTION=$(echo "$DECISION" | jq -r '.action')
+
+          echo "pr_num=$PR_NUM" >> $GITHUB_OUTPUT
+
+          case "$ACTION" in
+            not-review-response)
+              echo "Claude comment on PR #$PR_NUM is not a review response — skipping"
+              echo "has_issues=false" >> $GITHUB_OUTPUT
+              exit 0
+              ;;
+            already-approved)
+              echo "PR #$PR_NUM already has an approval — no action needed"
+              echo "has_issues=false" >> $GITHUB_OUTPUT
+              exit 0
+              ;;
+            has-critical-inline)
+              COUNT=$(echo "$DECISION" | jq -r '.count')
+              echo "PR has $COUNT critical/high-severity inline comments — NOT auto-approving"
+              echo "has_issues=false" >> $GITHUB_OUTPUT
+              exit 0
+              ;;
+            has-issues)
+              echo "Claude flagged issues — NOT auto-approving"
+              echo "has_issues=true" >> $GITHUB_OUTPUT
+              exit 0
+              ;;
+            approve)
+              echo "Claude reviewed PR #$PR_NUM — auto-approving"
+              echo "has_issues=false" >> $GITHUB_OUTPUT
+              npx tsx .github/scripts/lib/cli/pipeline.ts approve-and-merge "$PR_NUM" "Auto-approved: code review provided by Claude." "$REPO"
+              ;;
+          esac
+        id: review_check
+
+      - name: Request Claude fix issues found in review
+        if: steps.review_check.outputs.has_issues == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          REPO: ${{ github.repository }}
+        run: |
+          PR_NUM=${{ steps.review_check.outputs.pr_num }}
+
+          # Guard: only request a fix once per review cycle
+          ALREADY_REQUESTED=$(gh api "repos/$REPO/issues/$PR_NUM/comments" \
+            -q '[.[] | select(.body | test("Fix the issues from the code review above"))] | length' 2>/dev/null || echo "0")
+
+          if [ "$ALREADY_REQUESTED" -gt 0 ]; then
+            echo "Fix already requested on PR #$PR_NUM — skipping to avoid cycle"
             exit 0
           fi
 
-          echo "Claude reviewed PR #$PR_NUM — auto-approving"
-          gh pr review "$PR_NUM" --repo "$REPO" --approve \
-            --body "Auto-approved: code review provided by Claude."
+          # Extract Claude's review findings to include in the fix request
+          CLAUDE_COMMENT_ID=${{ github.event.comment.id }}
+          REVIEW_BODY=$(gh api "repos/$REPO/issues/comments/$CLAUDE_COMMENT_ID" \
+            -q '.body' 2>/dev/null || echo "")
+
+          # Post a fix request that quotes the specific issues
+          BODY=$(cat <<EOF
+          @claude Fix the issues from the code review above (comment #${CLAUDE_COMMENT_ID}).
+
+          Here are the findings to address:
+
+          <review_findings>
+          ${REVIEW_BODY}
+          </review_findings>
+
+          Instructions:
+          - Fix ONLY the issues listed above. Do NOT re-review or look at other comments.
+          - After fixing, run \`pnpm typecheck\` and \`pnpm test\` to verify nothing is broken.
+          - Git add and commit your fixes.
+          - Do NOT post a new review. Just fix the code.
+          EOF
+          )
+          npx tsx .github/scripts/lib/cli/pipeline.ts comment "$PR_NUM" "$BODY" "$REPO"
 
   # Check for missing reviews after CI passes
   ensure-review:
@@ -172,17 +224,27 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
+      - name: Checkout scripts
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            .github/scripts
+            .github/actions
+          sparse-checkout-cone-mode: false
+
+      - name: Setup pipeline TypeScript
+        uses: ./.github/actions/setup-pipeline-ts
+
       - name: Check if PR needs review or approval
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
-          AGENT: ${{ vars.PREFERRED_AGENT || 'claude' }}
-          REPO: ${{ github.repository }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           BRANCH="${{ github.event.workflow_run.head_branch }}"
           echo "CI passed for branch: $BRANCH"
 
-          PR_NUM=$(gh pr list --repo "$REPO" --head "$BRANCH" --state open \
-            --json number -q '.[0].number' 2>/dev/null || echo "")
+          export WORKFLOW_RUN_HEAD_BRANCH="$BRANCH"
+          PR_NUM=$(npx tsx .github/scripts/lib/cli/pipeline.ts get-pr-number "workflow_run")
 
           if [ -z "$PR_NUM" ]; then
             echo "No open PR found for branch $BRANCH"
@@ -192,53 +254,23 @@ jobs:
           echo "Checking reviews on PR #$PR_NUM"
           echo "pr_num=$PR_NUM" >> $GITHUB_OUTPUT
 
-          # Check for APPROVED reviews
-          HAS_APPROVAL=$(gh pr view "$PR_NUM" --repo "$REPO" --json reviews \
-            -q '[.reviews[] | select(.state == "APPROVED")] | length' 2>/dev/null || echo "0")
+          DECISION=$(npx tsx .github/scripts/lib/cli/pipeline.ts guardian-ensure-review "$PR_NUM")
+          ACTION=$(echo "$DECISION" | jq -r '.action')
 
-          if [ "$HAS_APPROVAL" -gt 0 ]; then
-            echo "PR #$PR_NUM already approved — dispatching auto-merge"
-            echo "action=dispatch-auto-merge" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-
-          # Check for any formal PR reviews
-          ANY_REVIEWS=$(gh pr view "$PR_NUM" --repo "$REPO" --json reviews \
-            -q '.reviews | length' 2>/dev/null || echo "0")
-
-          if [ "$ANY_REVIEWS" -gt 0 ]; then
-            echo "PR #$PR_NUM has reviews but no approval — dispatching auto-merge for re-evaluation"
-            echo "action=dispatch-auto-merge" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-
-          # No reviews at all — check if we already requested one
-          EXISTING_REQUEST=$(gh api "repos/$REPO/issues/$PR_NUM/comments" \
-            -q '[.[] | select(.body | contains("Please perform a comprehensive code review"))] | length' 2>/dev/null || echo "0")
-
-          if [ "$EXISTING_REQUEST" -gt 0 ]; then
-            echo "Already requested a fallback review — waiting for it"
-            echo "action=none" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-
-          # Wait briefly for Gemini
-          echo "No reviews found. Waiting 60s for Gemini..."
-          sleep 60
-
-          # Re-check
-          ANY_REVIEWS=$(gh pr view "$PR_NUM" --repo "$REPO" --json reviews \
-            -q '.reviews | length' 2>/dev/null || echo "0")
-
-          if [ "$ANY_REVIEWS" -gt 0 ]; then
-            echo "Review arrived during wait"
-            echo "action=dispatch-auto-merge" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-
-          echo "Still no reviews. Requesting fallback review."
-          echo "action=request-review" >> $GITHUB_OUTPUT
+          echo "Decision: $ACTION"
+          echo "action=$ACTION" >> $GITHUB_OUTPUT
         id: check
+
+      - name: Approve PR (all threads resolved after review-fix)
+        if: steps.check.outputs.action == 'approve'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+          REPO: ${{ github.repository }}
+        run: |
+          PR_NUM=${{ steps.check.outputs.pr_num }}
+          echo "All review threads resolved on PR #$PR_NUM — approving"
+          npx tsx .github/scripts/lib/cli/pipeline.ts approve-and-merge "$PR_NUM" "Auto-approved: all review threads resolved after fixes landed and CI passed." "$REPO"
 
       - name: Dispatch auto-merge for re-evaluation
         if: steps.check.outputs.action == 'dispatch-auto-merge'
@@ -246,11 +278,29 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           PR_NUM=${{ steps.check.outputs.pr_num }}
-          DEFAULT_BRANCH="${{ github.event.repository.default_branch || 'main' }}"
-          gh workflow run auto-merge.yml \
-            --repo "${{ github.repository }}" \
-            --ref "$DEFAULT_BRANCH" \
-            -f pr_number="$PR_NUM" 2>/dev/null || echo "Failed to dispatch auto-merge"
+          echo "Dispatching auto-merge for PR #$PR_NUM"
+          npx tsx .github/scripts/lib/cli/pipeline.ts dispatch "auto-merge.yml" -f pr_number="$PR_NUM"
+
+      - name: Dispatch review-fix for unresolved threads
+        if: steps.check.outputs.action == 'dispatch-review-fix'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          REPO: ${{ github.repository }}
+        run: |
+          PR_NUM=${{ steps.check.outputs.pr_num }}
+          BRANCH=$(gh pr view "$PR_NUM" --repo "$REPO" --json headRefName -q '.headRefName')
+
+          # Gather unresolved review comments as context for Claude
+          REVIEW_SUMMARY=$(gh api "repos/$REPO/pulls/$PR_NUM/comments" \
+            --jq '[.[] | "\(.path):\(.line) — \(.body | split("\n")[0])"] | join("\n")' 2>/dev/null \
+            | head -c 2000 || echo "Unresolved review threads on PR #$PR_NUM")
+
+          echo "Dispatching review-fix for PR #$PR_NUM (branch: $BRANCH)"
+          npx tsx .github/scripts/lib/cli/pipeline.ts dispatch "review-fix.yml" \
+            -f pr_number="$PR_NUM" \
+            -f pr_branch="$BRANCH" \
+            -f review_summary="$REVIEW_SUMMARY" \
+            -f reviewer="bot-review-guardian-fallback"
 
       - name: Request fallback review
         if: steps.check.outputs.action == 'request-review'
@@ -261,5 +311,4 @@ jobs:
         run: |
           PR_NUM=${{ steps.check.outputs.pr_num }}
           echo "Requesting @$AGENT fallback review for PR #$PR_NUM"
-          gh pr comment "$PR_NUM" --repo "$REPO" \
-            --body "@$AGENT No code review was posted on this PR (the usual reviewer may be at quota). Please perform a comprehensive code review. Check for bugs, security issues, performance problems, and code quality. Post your findings as a PR review (approve if it looks good, or request changes if there are issues). This is an automated fallback."
+          npx tsx .github/scripts/lib/cli/pipeline.ts comment "$PR_NUM" "@$AGENT No code review was posted on this PR (the usual reviewer may be at quota). Please perform a comprehensive code review. Check for bugs, security issues, performance problems, and code quality. Post your findings as a PR review (approve if it looks good, or request changes if there are issues). This is an automated fallback." "$REPO"
