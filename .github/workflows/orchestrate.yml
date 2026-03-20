@@ -3,7 +3,7 @@ name: Orchestrate Story Pipeline
 on:
   pull_request:
     types: [closed]
-    branches: [main, master]
+    branches: [master]
 
 permissions:
   contents: read
@@ -15,7 +15,6 @@ jobs:
     if: github.event.pull_request.merged == true && vars.PIPELINE_ENABLED != 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 5
-
     steps:
       - name: Extract story issue number from PR
         id: extract
@@ -48,6 +47,14 @@ jobs:
           gh issue close "$ISSUE_NUM" --repo ${{ github.repository }} --comment "Completed via PR #${{ github.event.pull_request.number }}"
           gh issue edit "$ISSUE_NUM" --repo ${{ github.repository }} --remove-label "pending" --remove-label "in-progress" --add-label "completed" || true
 
+      - name: Checkout repo
+        if: steps.extract.outputs.found == 'true'
+        uses: actions/checkout@v4
+
+      - name: Setup pipeline TypeScript
+        if: steps.extract.outputs.found == 'true'
+        uses: ./.github/actions/setup-pipeline-ts
+
       - name: Find next story in epic
         if: steps.extract.outputs.found == 'true'
         id: next
@@ -64,14 +71,7 @@ jobs:
           fi
           echo "Epic label: $EPIC_LABEL"
 
-          NEXT_STORY=$(gh issue list \
-            --repo ${{ github.repository }} \
-            --label "story" \
-            --label "pending" \
-            --label "$EPIC_LABEL" \
-            --state open \
-            --json number \
-            -q '[.[] | .number] | sort | .[0]')
+          NEXT_STORY=$(npx tsx .github/scripts/lib/cli/pipeline.ts get-next-pending-story "$EPIC_LABEL" "${{ github.repository }}")
 
           if [ -z "$NEXT_STORY" ] || [ "$NEXT_STORY" = "null" ]; then
             echo "All stories in $EPIC_LABEL are complete!"
@@ -124,13 +124,17 @@ jobs:
         if: steps.next.outputs.found == 'true' && steps.safety.outputs.safe == 'true'
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          # Use 'claude' by default, or 'gemini' if configured in vars
           AGENT: ${{ vars.PREFERRED_AGENT || 'claude' }}
         run: |
           NEXT=${{ steps.next.outputs.next_story }}
           echo "Triggering story #$NEXT using @$AGENT"
 
+          # Initialize pipeline state for the new story
+          npx tsx .github/scripts/lib/cli/state-machine.ts transition "$NEXT" "planned" 2>/dev/null || true
+
           gh issue edit "$NEXT" --repo ${{ github.repository }} \
             --remove-label "pending" --add-label "in-progress" || true
 
-          gh issue comment "$NEXT" --repo ${{ github.repository }} \
-            --body "@$AGENT Implement this story. Read CLAUDE.md for project context and follow the skill referenced in this issue. IMPORTANT: After completing each acceptance criterion, git add, git commit, and git push before moving on. Run tests before your final commit. Create a PR with 'Closes #$NEXT' in the body when done."
+          npx tsx .github/scripts/lib/cli/pipeline.ts trigger-story-agent "$NEXT" "$AGENT"

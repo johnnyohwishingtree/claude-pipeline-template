@@ -1,0 +1,18 @@
+name: 'Setup Pipeline TypeScript'
+description: 'Install Node.js, pnpm, and pipeline TypeScript dependencies for running TS scripts'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Install pnpm
+      shell: bash
+      run: npm install -g pnpm
+
+    - name: Install pipeline TS dependencies
+      shell: bash
+      run: cd .github/scripts && pnpm install --frozen-lockfile 2>/dev/null || pnpm install --no-frozen-lockfile

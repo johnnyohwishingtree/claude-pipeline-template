@@ -27,7 +27,6 @@ jobs:
       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
     runs-on: ubuntu-latest
     timeout-minutes: 60
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -35,12 +34,12 @@ jobs:
           fetch-depth: 0
 
       - name: Configure git and auth
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-        run: |
-          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
-          git config user.name "Claude CI"
-          git config user.email "claude-ci@users.noreply.github.com"
+        uses: ./.github/actions/setup-auth
+        with:
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Setup pipeline TypeScript
+        uses: ./.github/actions/setup-pipeline-ts
 
       - name: Switch to PR branch if applicable
         if: github.event.issue.pull_request || github.event.pull_request
@@ -61,8 +60,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          DEFAULT_BRANCH="${{ github.event.repository.default_branch || 'main' }}"
-
           if [ -n "${{ github.event.issue.pull_request }}" ] || [ -n "${{ github.event.pull_request }}" ]; then
             echo "is_pr=true" >> $GITHUB_OUTPUT
             echo "push_cmd=git push origin HEAD" >> $GITHUB_OUTPUT
@@ -78,7 +75,7 @@ jobs:
 
             # Check for existing work from previous runs.
             # Look for claude/issue-N (PR branch) and claude/issue-N-* (action branches).
-            # Pick the one with the most commits ahead of default branch.
+            # Pick the one with the most commits ahead of master.
             BEST_BRANCH=""
             BEST_AHEAD=0
 
@@ -86,7 +83,7 @@ jobs:
               "refs/remotes/origin/claude/issue-${ISSUE_NUM}" \
               "refs/remotes/origin/claude/issue-${ISSUE_NUM}-*" \
               2>/dev/null); do
-              AHEAD=$(git rev-list --count "origin/${DEFAULT_BRANCH}..$ref" 2>/dev/null || echo "0")
+              AHEAD=$(git rev-list --count "origin/master..$ref" 2>/dev/null || echo "0")
               if [ "$AHEAD" -gt "$BEST_AHEAD" ]; then
                 BEST_AHEAD=$AHEAD
                 BEST_BRANCH=$(echo "$ref" | sed 's|^origin/||')
@@ -94,7 +91,7 @@ jobs:
             done
 
             if [ "$BEST_AHEAD" -gt 0 ] && [ -n "$BEST_BRANCH" ]; then
-              echo "Found existing work: $BEST_BRANCH ($BEST_AHEAD commits ahead of $DEFAULT_BRANCH)"
+              echo "Found existing work: $BEST_BRANCH ($BEST_AHEAD commits ahead of master)"
               echo "resume_branch=$BEST_BRANCH" >> $GITHUB_OUTPUT
               echo "resume_ahead=$BEST_AHEAD" >> $GITHUB_OUTPUT
 
@@ -103,29 +100,33 @@ jobs:
               echo "Checked out existing branch: $BEST_BRANCH"
             fi
 
-            # Create PR branch from current HEAD (default branch or existing work)
+            # Create PR branch from current HEAD (master or existing work)
             git push origin "HEAD:refs/heads/$PR_BRANCH" 2>/dev/null || echo "PR branch $PR_BRANCH already exists"
             # Create new tmp branch from current HEAD
             git push origin "HEAD:refs/heads/$TMP_BRANCH"
             echo "Created tmp branch: $TMP_BRANCH"
           fi
 
-      # TODO: Set up your language runtime and install dependencies here.
-      # Examples:
-      #
-      # - name: Set up Node.js
-      #   uses: actions/setup-node@v4
-      #   with:
-      #     node-version: '20'
-      # - name: Install dependencies
-      #   run: npm ci
+      - name: Track state -> implementing
+        if: steps.push_target.outputs.is_pr == 'false'
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: |
+          ISSUE_NUM="${{ github.event.issue.number }}"
+          npx tsx .github/scripts/lib/cli/activity.ts start \
+            "$ISSUE_NUM" "implement" "planned" "stuck" "escalated" 2>/dev/null || true
+
+      - name: Set up Node and pnpm
+        uses: ./.github/actions/setup-node
 
       - name: Build system prompt
         id: system_prompt
         run: |
           RESUME_NOTE=""
           if [ -n "${{ steps.push_target.outputs.resume_branch }}" ]; then
-            RESUME_NOTE="RESUMING PREVIOUS WORK: This run is continuing from branch \`${{ steps.push_target.outputs.resume_branch }}\` which has ${{ steps.push_target.outputs.resume_ahead }} commits ahead of the default branch from a previous run. Do NOT start over — review what was already done (check git log, read existing files) and continue from where it left off. Only implement what is not yet complete."
+            RESUME_NOTE="RESUMING PREVIOUS WORK: This run is continuing from branch \`${{ steps.push_target.outputs.resume_branch }}\` which has ${{ steps.push_target.outputs.resume_ahead }} commits ahead of master from a previous run. Do NOT start over — review what was already done (check git log, read existing files) and continue from where it left off. Only implement what is not yet complete."
           fi
           echo "resume_note<<EOF" >> $GITHUB_OUTPUT
           echo "$RESUME_NOTE" >> $GITHUB_OUTPUT
@@ -158,8 +159,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          # Re-auth — claude-code-action may have changed the remote URL
-          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+          npx tsx .github/scripts/lib/cli/pipeline.ts setup-git-auth
 
           ISSUE_NUM="${{ github.event.issue.number || github.event.pull_request.number }}"
           TMP_BRANCH="tmp/claude-${{ github.run_id }}"
@@ -175,11 +175,10 @@ jobs:
           fi
 
           # Check if there's anything to push
-          DEFAULT_BRANCH="${{ github.event.repository.default_branch || 'main' }}"
           LOCAL_HEAD=$(git rev-parse HEAD)
-          DEFAULT_HEAD=$(git rev-parse "origin/$DEFAULT_BRANCH" 2>/dev/null || echo "none")
+          MASTER_HEAD=$(git rev-parse "origin/master" 2>/dev/null || echo "none")
 
-          if [ "$LOCAL_HEAD" = "$DEFAULT_HEAD" ]; then
+          if [ "$LOCAL_HEAD" = "$MASTER_HEAD" ]; then
             echo "No new commits to rescue — nothing was changed"
             exit 0
           fi
@@ -189,15 +188,16 @@ jobs:
           echo "Rescued work to $TMP_BRANCH"
 
           # Comment on the issue so the user knows
-          COMMIT_COUNT=$(git rev-list --count "origin/$DEFAULT_BRANCH..HEAD" 2>/dev/null || echo "?")
-          gh issue comment "$ISSUE_NUM" --repo "${{ github.repository }}" --body "$(cat <<EOF
-          Claude's run timed out after 60 minutes, but the in-progress work was saved to [\`${TMP_BRANCH}\`](https://github.com/${{ github.repository }}/tree/${TMP_BRANCH}) (${COMMIT_COUNT} commits ahead of $DEFAULT_BRANCH).
+          COMMIT_COUNT=$(git rev-list --count "origin/master..HEAD" 2>/dev/null || echo "?")
+          BODY=$(cat <<EOF
+          Claude's run timed out after 60 minutes, but the in-progress work was saved to [\`${TMP_BRANCH}\`](https://github.com/${{ github.repository }}/tree/${TMP_BRANCH}) (${COMMIT_COUNT} commits ahead of master).
 
           To resume, comment on this issue again with: \`@claude Continue the work from the \`${TMP_BRANCH}\` branch. Check out that branch first, then pick up where you left off.\`
 
           Or manually: \`git fetch origin ${TMP_BRANCH} && git checkout ${TMP_BRANCH}\`
           EOF
-          )" 2>/dev/null || echo "Failed to post rescue comment"
+          )
+          npx tsx .github/scripts/lib/cli/pipeline.ts comment "$ISSUE_NUM" "$BODY"
 
       # -- Normal flow (only runs if Claude completed successfully) --
       - name: Push to PR branch (PR context)
@@ -206,38 +206,11 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          # Re-auth — claude-code-action may have changed the remote URL
-          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
-
+          npx tsx .github/scripts/lib/cli/pipeline.ts setup-git-auth
+          npx tsx .github/scripts/lib/cli/pipeline.ts commit "chore: save unpushed changes from Claude" || true
           SOURCE_BRANCH=$(git branch --show-current)
           echo "source_branch=$SOURCE_BRANCH" >> $GITHUB_OUTPUT
-
-          # Commit any uncommitted changes
-          CHANGES=$(git status --porcelain | grep -v '^?? output.txt$' || true)
-          if [ -n "$CHANGES" ]; then
-            git add -u
-            if [ -n "$(git diff --cached --name-only)" ]; then
-              git commit -m "chore: save unpushed changes from Claude
-
-          Co-authored-by: Claude <noreply@anthropic.com>"
-            fi
-          fi
-
-          # claude-code-action@v1 may have already pushed via its internal
-          # git-push.sh script, so the remote branch can be ahead of local HEAD.
-          # Pull --rebase to fast-forward, then push only if we have new commits.
-          git fetch origin "$SOURCE_BRANCH" 2>/dev/null || true
-          REMOTE_HEAD=$(git rev-parse "origin/$SOURCE_BRANCH" 2>/dev/null || echo "none")
-          LOCAL_HEAD=$(git rev-parse HEAD)
-
-          if [ "$LOCAL_HEAD" = "$REMOTE_HEAD" ]; then
-            echo "Local HEAD matches remote — nothing to push"
-          else
-            # Rebase local work on top of anything the action already pushed
-            git pull --rebase origin "$SOURCE_BRANCH" 2>/dev/null || true
-            git push origin "HEAD:$SOURCE_BRANCH"
-            echo "Pushed to PR branch $SOURCE_BRANCH"
-          fi
+          npx tsx .github/scripts/lib/cli/pipeline.ts push "$SOURCE_BRANCH"
 
       - name: Push remaining work to tmp branch (issue context)
         if: success() && steps.push_target.outputs.is_pr == 'false'
@@ -245,37 +218,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          # Re-auth — claude-code-action may have changed the remote URL
-          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
-
+          npx tsx .github/scripts/lib/cli/pipeline.ts setup-git-auth
+          npx tsx .github/scripts/lib/cli/pipeline.ts commit "chore: save unpushed changes from Claude" || true
           TMP_BRANCH="${{ steps.push_target.outputs.tmp_branch }}"
           PR_BRANCH="${{ steps.push_target.outputs.pr_branch }}"
           echo "tmp_branch=$TMP_BRANCH" >> $GITHUB_OUTPUT
           echo "pr_branch=$PR_BRANCH" >> $GITHUB_OUTPUT
-
-          # Commit any uncommitted changes
-          CHANGES=$(git status --porcelain | grep -v '^?? output.txt$' || true)
-          if [ -n "$CHANGES" ]; then
-            git add -u
-            if [ -n "$(git diff --cached --name-only)" ]; then
-              git commit -m "chore: save unpushed changes from Claude
-
-          Co-authored-by: Claude <noreply@anthropic.com>"
-            fi
-          fi
-
-          # claude-code-action may have already pushed mid-run via push_cmd.
-          # Check if there's anything new to push before attempting.
-          git fetch origin "$TMP_BRANCH" 2>/dev/null || true
-          REMOTE_HEAD=$(git rev-parse "origin/$TMP_BRANCH" 2>/dev/null || echo "none")
-          LOCAL_HEAD=$(git rev-parse HEAD)
-
-          if [ "$LOCAL_HEAD" = "$REMOTE_HEAD" ]; then
-            echo "Local HEAD matches remote $TMP_BRANCH — nothing to push"
-          else
-            git push origin "HEAD:refs/heads/$TMP_BRANCH" --force-with-lease
-            echo "Pushed remaining work to $TMP_BRANCH"
-          fi
+          npx tsx .github/scripts/lib/cli/pipeline.ts push "$TMP_BRANCH"
 
       - name: Resolve bot review threads
         if: success()
@@ -291,61 +240,39 @@ jobs:
               PR_NUM=${{ github.event.issue.number }}
             fi
           fi
-
           if [ -z "$PR_NUM" ]; then
             echo "Not a PR context — skipping thread resolution"
             exit 0
           fi
-
           echo "Resolving review threads on PR #$PR_NUM"
-          OWNER=$(echo "$REPO" | cut -d/ -f1)
-          NAME=$(echo "$REPO" | cut -d/ -f2)
+          npx tsx .github/scripts/lib/cli/pipeline.ts resolve-all-threads "$PR_NUM" "$REPO"
 
-          THREAD_IDS=$(gh api graphql -f query="
-            query {
-              repository(owner: \"$OWNER\", name: \"$NAME\") {
-                pullRequest(number: $PR_NUM) {
-                  reviewThreads(first: 100) {
-                    nodes { id isResolved }
-                  }
-                }
-              }
-            }
-          " --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false) | .id' 2>/dev/null || echo "")
+      - name: Track state -> implementing complete
+        if: success() && steps.push_target.outputs.is_pr == 'false'
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          ACTIVITY_NAME: implement
+        run: |
+          export ACTIVITY_LOCK_ID="implement-${GITHUB_RUN_ID}"
+          npx tsx .github/scripts/lib/cli/activity.ts success \
+            "${{ github.event.issue.number }}" "implementing" 2>/dev/null || true
 
-          if [ -z "$THREAD_IDS" ]; then
-            echo "No unresolved review threads"
-            exit 0
-          fi
-
-          echo "$THREAD_IDS" | while read -r TID; do
-            if [ -n "$TID" ]; then
-              gh api graphql -f query="
-                mutation {
-                  resolveReviewThread(input: {threadId: \"$TID\"}) {
-                    thread { isResolved }
-                  }
-                }
-              " 2>/dev/null && echo "Resolved thread $TID" || echo "Failed to resolve $TID"
-            fi
-          done
-
-      - name: Trigger verify-merge (issue context only)
+      - name: Trigger verify-and-fix (issue context only)
         if: success() && steps.push_target.outputs.is_pr == 'false'
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          TMP_BRANCH="${{ steps.push_issue.outputs.tmp_branch }}"
-          PR_BRANCH="${{ steps.push_issue.outputs.pr_branch }}"
-          ISSUE_NUM="${{ github.event.issue.number }}"
-          DEFAULT_BRANCH="${{ github.event.repository.default_branch || 'main' }}"
+          npx tsx .github/scripts/lib/cli/pipeline.ts dispatch "verify-and-fix.yml" \
+            -f branch="${{ steps.push_issue.outputs.tmp_branch }}" \
+            -f merge_into="${{ steps.push_issue.outputs.pr_branch }}" \
+            -f create_pr="true" \
+            -f issue_number="${{ github.event.issue.number }}" \
+            -f checks="ci" \
+            -f fix_enabled="true" \
+            -f max_attempts="6"
+          echo "Triggered verify-and-fix"
 
-          gh workflow run verify-merge.yml \
-            --repo "${{ github.repository }}" \
-            --ref "$DEFAULT_BRANCH" \
-            -f tmp_branch="$TMP_BRANCH" \
-            -f target_branch="$PR_BRANCH" \
-            -f issue_number="${ISSUE_NUM}" \
-            -f attempt="1"
-
-          echo "Triggered verify-merge for $TMP_BRANCH -> $PR_BRANCH"
+      # Auto-merge removed — auto-merge.yml is the single gate that
+      # merges PRs only after Tests + E2E + approval + threads resolved.

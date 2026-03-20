@@ -9,10 +9,9 @@ An end-to-end autonomous development loop:
 ```
 @claude comment on issue
   -> Claude implements on claude/issue-N branch
-    -> Pushes to tmp/ branch (no checks yet)
-      -> verify-merge runs tests on tmp/
-        -> Pass: merge tmp/ into claude/issue-N, create PR
-        -> Fail: Claude fixes with fresh context, re-verify (up to 6x)
+    -> verify-and-fix runs tests on tmp/vf-* branch
+      -> Pass: merge into claude/issue-N, create PR
+      -> Fail: Claude fixes with fresh context, re-verify (up to 6x)
   -> PR created
     -> Bot reviewers (Gemini/Copilot) review the PR
       -> review-relay dispatches review-fix to address feedback
@@ -68,11 +67,10 @@ Go to **Settings > Secrets and variables > Actions > Variables**:
 ### 4. Customize for your project
 
 1. **Edit `CLAUDE.md`** — Replace the skeleton with your project's context, architecture, and conventions
-2. **Edit workflow TODO sections** — Update language runtime, dependencies, and test commands in:
-   - `.github/workflows/claude.yml` (setup + allowed tools)
-   - `.github/workflows/verify-merge.yml` (setup + test commands)
-   - `.github/workflows/test.yml` (setup + test commands)
-   - `.github/workflows/review-fix.yml` (setup + verify step)
+2. **Edit workflow test commands** — Update language runtime, dependencies, and test commands in:
+   - `.github/workflows/test.yml` — CI checks (typecheck + test)
+   - `.github/workflows/verify-and-fix.yml` — verify job checks
+   - `.github/scripts/lib/verify-checks.ts` — TypeScript check runner (lint, typecheck, test)
 3. **Edit `.claude/skills/`** — Customize or add skills relevant to your project
 
 ### 5. Configure repository settings
@@ -122,45 +120,56 @@ Either:
 - **Epic pipeline:** Use `/epic-planner` to create an epic with stories, then comment `@claude` on the first story
 - **Automatic:** Trigger the planner via Actions > Planner > Run workflow
 
-## How It Works
+## Architecture
+
+### TypeScript Pipeline CLI
+
+All pipeline logic is implemented in TypeScript with full type safety and Vitest tests. Workflows call a unified CLI instead of inline shell commands:
+
+```yaml
+# Instead of raw gh/git commands:
+npx tsx .github/scripts/lib/cli/pipeline.ts dispatch "auto-merge.yml" -f pr_number="42"
+npx tsx .github/scripts/lib/cli/pipeline.ts comment 123 "Status update"
+npx tsx .github/scripts/lib/cli/pipeline.ts setup-git-auth
+```
+
+Key modules in `.github/scripts/lib/`:
+
+| Module | Purpose |
+|--------|---------|
+| `github.ts` | Typed GitHub API client (Octokit REST + GraphQL) |
+| `git.ts` | Local git operations (auth, merge, commit, push) |
+| `merge-gate.ts` | Evaluates 6 merge conditions |
+| `verify-checks.ts` | Runs lint, typecheck, test checks |
+| `watcher.ts` | Pipeline health monitoring |
+| `doctor.ts` | Failure diagnosis and reproduction |
+| `review-guardian.ts` | Review decision logic |
+| `state-machine.ts` | Durable state in issue comments |
+| `workflow.ts` | Temporal-like activity runner |
+| `ci-dispatch.ts` | CI failure dispatch to verify-and-fix |
+
+Run `cd .github/scripts && pnpm test` for the pipeline test suite.
+
+### Composite Actions
+
+| Action | Purpose |
+|--------|---------|
+| `setup-auth` | Git remote URL auth + user identity |
+| `setup-node` | Node.js 20 + pnpm + `pnpm install` |
+| `setup-pipeline-ts` | Node.js 20 + pnpm + pipeline TS deps |
+| `merge-master` | Fetch + merge master with conflict strategy |
 
 ### The temp branch pattern
 
-Claude never pushes directly to the PR branch. Instead:
+Claude never pushes broken code to the PR branch. Instead:
 
 1. **`claude.yml`** — Claude works on `claude/issue-N` branch, then pushes to `tmp/claude-<run_id>`
-2. **`verify-merge.yml`** — Runs tests on the temp branch:
+2. **`verify-and-fix.yml`** — Runs tests on a temp branch (`tmp/vf-*`):
    - **Pass:** Merges temp into `claude/issue-N`, deletes temp, creates PR
    - **Fail:** Claude fixes with fresh context on the temp branch, re-triggers verify (up to 6 attempts)
-   - **Give up:** Comments on the issue, cleans up stale branches
+   - **Give up:** Triggers pipeline-doctor for diagnosis
 
-This ensures only verified code lands on the PR branch, and fix attempts get fresh context instead of accumulating a polluted conversation.
-
-### Resume from existing work
-
-When Claude is triggered on an issue that already has work from a previous run, `claude.yml` automatically finds the branch with the most commits ahead of the default branch and resumes from there. No work is lost across retries or timeouts.
-
-### Timeout rescue
-
-If a Claude run times out (60 minute limit), the rescue step saves all in-progress work to the temp branch and posts a comment with instructions to resume.
-
-### Code review flow
-
-```
-PR created
-  -> Gemini/Copilot posts review
-    -> review-relay.yml detects bot review
-      -> Dispatches review-fix.yml (Claude with full Edit/Write permissions)
-        -> Claude fixes feedback, resolves threads, pushes
-    -> review-guardian.yml auto-approves (if no critical/high issues)
-  -> auto-merge.yml merges when: tests pass + approved + threads resolved
-```
-
-> **Why review-fix instead of @claude PR comments?** `claude-code-action@v1` strips Edit/Write tools when triggered from PR comments — only read tools are allowed. `review-fix.yml` uses `workflow_dispatch` which gives Claude full tool access.
-
-### Bot comment isolation
-
-The Claude Code Action posts status comments ("working...", plan updates) which trigger `issue_comment` events. The concurrency group includes the comment author (`claude-245-username` vs `claude-245-claude[bot]`) so bot comments never cancel or interfere with the real run.
+This ensures only verified code lands on the PR branch.
 
 ## Workflows
 
@@ -168,9 +177,10 @@ The Claude Code Action posts status comments ("working...", plan updates) which 
 
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
-| `claude.yml` | `@claude` comment | Runs Claude, pushes to temp branch, triggers verify-merge |
-| `verify-merge.yml` | Dispatched by claude.yml | Runs tests, merges if passing, fixes if failing (up to 6 attempts) |
-| `test.yml` | Push/PR to default branch | Runs tests; notifies Claude on failure for claude/ branches |
+| `claude.yml` | `@claude` comment | Runs Claude, pushes to temp branch, triggers verify-and-fix |
+| `gemini.yml` | `@gemini` comment | Runs Gemini agent on issue or PR |
+| `verify-and-fix.yml` | Dispatched by workflows | Verify + fix loop with temp branches (up to 6 attempts) |
+| `test.yml` | Push/PR to master / manual | CI checks (typecheck, test); dispatches verify-and-fix on failure |
 
 ### Code Review
 
@@ -184,35 +194,47 @@ The Claude Code Action posts status comments ("working...", plan updates) which 
 
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
-| `auto-merge.yml` | Tests/review/push events | Single gate: merges when tests + approval + threads resolved |
+| `auto-merge.yml` | Tests/review/push events | Single gate: merges when 6 conditions met |
 | `orchestrate.yml` | PR merged | Closes story, triggers next one in the epic |
-| `resolve-conflicts.yml` | Push to default branch | Auto-resolves merge conflicts on open PRs |
+| `resolve-conflicts.yml` | Push to master / manual | Auto-resolves merge conflicts on open PRs |
 
 ### Monitoring & Planning
 
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
-| `watcher.yml` | Every 20 min | Re-triggers stuck stories, detects failing CI, cleans orphan PRs |
-| `daily-planner.yml` | Weekends (configurable) | Creates new epics with stories |
+| `watcher.yml` | Every 20 min / manual | Re-triggers stuck stories, detects failing CI, cleans orphan PRs |
+| `pipeline-doctor.yml` | verify-and-fix give-up / watcher | Diagnoses failures, collects evidence |
+| `daily-planner.yml` | Manual | Creates new epics with stories |
 | `pipeline-toggle.yml` | Manual | Enable/disable the autonomous pipeline |
+| `agent-switcher.yml` | Manual / comment | Switch between Claude and Gemini agents |
+
+## Auto-Merge Gate (6 Conditions)
+
+PRs merge only when ALL conditions are met:
+1. Tests workflow passed
+2. E2E passed (if configured)
+3. PR has at least one approval (owner PRs implicitly approved)
+4. No unresolved review threads
+5. No active review-fix runs
+6. Branch up to date with master
 
 ## Safety Mechanisms
 
-- **Bot isolation:** Bot status comments get separate concurrency groups — can't cancel real runs
 - **Temp branch pattern:** Only verified code reaches the PR branch
-- **Fix attempt limit:** 6 attempts per verify-merge before giving up
+- **Bot isolation:** Bot status comments get separate concurrency groups
+- **Fix attempt limit:** Configurable attempts per verify-and-fix before giving up
 - **No-changes detection:** If Claude produces no changes, skips remaining attempts
 - **Permission denial detection:** Aborts fix loop if Claude hits >5 permission denials
 - **Timeout rescue:** Saves work and triggers next attempt on timeout
 - **Cross-attempt context:** `.claude-fix-log.md` prevents repeating failed approaches
-- **Story retry limit:** 5 watcher retries before requiring human review
+- **Story retry limit:** Watcher retries before requiring human review
 - **Review relay limit:** 3 rounds before escalating to human
 - **Review-fix dispatch:** Full Edit/Write permissions (not restricted @claude PR comments)
 - **Grace period:** 15-minute cooldown before watcher re-triggers
 - **Consecutive failure detection:** Orchestrator pauses after 3+ unmerged PRs
+- **Pipeline doctor:** Diagnoses failures and collects evidence for stuck pipelines
 - **Orphan PR cleanup:** Watcher closes PRs with no linked story
 - **Auto-conflict resolution:** Infrastructure/lock files take default branch version
-- **Event-driven approval:** Auto-approve only flows through review event hooks
 
 ## Skills
 
@@ -239,18 +261,24 @@ Skills are reusable prompts that guide Claude's implementation approach. See `.c
 
 ### Changing the test command
 
-Update the test/lint commands in these places:
-- `test.yml` — the CI check
-- `verify-merge.yml` — the verify job checks
-- `review-fix.yml` — the verify step (optional)
+Update test/lint commands in:
+- `.github/workflows/test.yml` — CI check jobs
+- `.github/scripts/lib/verify-checks.ts` — the TypeScript check runner
+- `.github/scripts/lib/cli/verify-checks.ts` — CLI wrapper
+
+### Adding E2E tests
+
+Create your own `e2e-smoke.yml` workflow following the pattern in `test.yml`. The `verify-and-fix.yml` already supports `checks: "e2e"` and `checks: "all"` modes — you just need a workflow that dispatches `ci-dispatch-pr`/`ci-dispatch-master` on failure.
+
+### Adding framework-specific checks
+
+Edit `.github/scripts/lib/verify-checks.ts`:
+- The `bundle` check is a no-op by default — add your bundler (metro, webpack, vite, etc.)
+- The `native_deps` check is a no-op by default — add platform-specific dependency checks
 
 ### Changing the planner schedule
 
-Edit `daily-planner.yml` cron expressions. Default is weekends only. Set to daily or on-demand only.
-
-### Disabling auto-planning
-
-Remove or disable `daily-planner.yml` and trigger stories manually with `@claude` comments.
+Edit `daily-planner.yml` to add cron expressions, or keep it manual-only (default).
 
 ### Using a different agent
 

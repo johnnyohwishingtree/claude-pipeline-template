@@ -1,0 +1,740 @@
+name: Verify and Fix
+run-name: "Verify #${{ inputs.issue_number }} on ${{ inputs.branch }} (attempt ${{ inputs.attempt }}/${{ inputs.max_attempts }})"
+
+# Reusable verify + fix loop. Runs quality checks on a branch, optionally
+# retries with Claude auto-fix on a temp branch (never pushes broken code
+# to the target branch).
+#
+# Temp branch pattern:
+#   - Attempt 1 verifies the source branch directly.
+#   - On failure, the fix job creates tmp/vf-<branch>-<run_id> from the
+#     source, fixes there, and passes it to subsequent attempts.
+#   - Only on final pass does the merge job merge verified code back.
+#
+# Merge modes (controlled by merge_into):
+#   - Empty: merge work branch back into source branch (default for CI fixes)
+#   - Set: merge into a DIFFERENT target branch, create PR (for claude.yml flow)
+#
+# Retry mechanism: self-dispatches with attempt+1 since workflow_call
+# can't self-dispatch. Callers trigger via npx tsx .github/scripts/lib/cli/pipeline.ts dispatch.
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Source branch to verify (receives verified code back unless merge_into is set)'
+        required: true
+        type: string
+      work_branch:
+        description: 'Temp work branch (empty on first call, set internally for retries)'
+        required: false
+        type: string
+        default: ''
+      merge_into:
+        description: 'Merge verified code into this branch instead of source (for claude.yml flow)'
+        required: false
+        type: string
+        default: ''
+      create_pr:
+        description: 'Create a PR after merge (requires merge_into)'
+        required: false
+        type: boolean
+        default: false
+      issue_number:
+        description: 'Issue/PR number for status comments'
+        required: false
+        type: string
+        default: ''
+      checks:
+        description: 'Check mode: "all", "ci", "e2e"'
+        required: false
+        type: string
+        default: 'all'
+      fix_enabled:
+        description: 'Enable Claude auto-fix on failure'
+        required: false
+        type: boolean
+        default: false
+      max_attempts:
+        description: 'Max fix attempts (1 = verify only, no retry)'
+        required: false
+        type: number
+        default: 1
+      attempt:
+        description: 'Current attempt number'
+        required: false
+        type: number
+        default: 1
+      fix_context:
+        description: 'Additional context for Claude fix prompt (e.g., review feedback)'
+        required: false
+        type: string
+        default: ''
+
+concurrency:
+  group: verify-fix-${{ inputs.branch }}-attempt-${{ inputs.attempt }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  id-token: write
+  actions: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      pass: ${{ steps.run-checks.outputs.pass }}
+      error_summary: ${{ steps.run-checks.outputs.error_summary }}
+      check_branch: ${{ steps.pick-branch.outputs.check_branch }}
+    steps:
+      - name: Pick branch to verify
+        id: pick-branch
+        run: |
+          # Attempt 1: verify the target branch directly
+          # Attempt 2+: verify the temp work branch (has previous fix attempts)
+          if [ -n "${{ inputs.work_branch }}" ]; then
+            echo "check_branch=${{ inputs.work_branch }}" >> $GITHUB_OUTPUT
+          else
+            echo "check_branch=${{ inputs.branch }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pick-branch.outputs.check_branch }}
+          fetch-depth: 0
+
+      - name: Setup pipeline TypeScript
+        uses: ./.github/actions/setup-pipeline-ts
+
+      - name: Configure git identity
+        run: |
+          git config user.name "Claude CI"
+          git config user.email "claude-ci@users.noreply.github.com"
+
+      - name: Merge master into branch
+        id: merge-master
+        uses: ./.github/actions/merge-master
+        with:
+          strategy: abort
+
+      - name: Set up Node and pnpm
+        uses: ./.github/actions/setup-node
+
+      - name: Run checks
+        id: run-checks
+        run: |
+          CHECKS="${{ inputs.checks }}"
+
+          # Merge conflict → instant fail
+          if [ "${{ steps.merge-master.outputs.conflict }}" = "true" ]; then
+            echo "pass=false" >> $GITHUB_OUTPUT
+            echo "error_summary=MERGE CONFLICT WITH MASTER — resolve this first." >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          PASS=true
+          SUMMARY=""
+
+          # --- CI checks (typecheck + bundle + test) ---
+          if [ "$CHECKS" = "all" ] || [ "$CHECKS" = "ci" ]; then
+            RESULT=$(npx tsx .github/scripts/lib/cli/verify-checks.ts --lint-only-changed --fail-fast 2>/dev/null) || true
+            CI_PASS=$(echo "$RESULT" | jq -r '.pass')
+            CI_SUMMARY=$(echo "$RESULT" | jq -r '.summary')
+
+            if [ "$CI_PASS" != "true" ]; then
+              PASS=false
+              SUMMARY="$CI_SUMMARY"
+            fi
+          fi
+
+          # --- E2E checks ---
+          if [ "$CHECKS" = "all" ] || [ "$CHECKS" = "e2e" ]; then
+            # Only run E2E if CI passed (or not requested)
+            if [ "$PASS" = "true" ] || [ "$CHECKS" = "e2e" ]; then
+              echo "=== Installing Playwright browsers ==="
+              npx playwright install --with-deps chromium firefox 2>&1
+
+              echo "=== Building webpack bundle ==="
+              if ! npx webpack --config webpack.config.js 2>&1 | tee /tmp/webpack_errors.txt; then
+                PASS=false
+                WEBPACK_ERRS=$(tail -20 /tmp/webpack_errors.txt)
+                SUMMARY="${SUMMARY}
+
+          WEBPACK BUILD ERRORS:
+          ${WEBPACK_ERRS}"
+              else
+                echo "=== Running Playwright tests ==="
+                set -o pipefail
+                if ! CI=true npx playwright test 2>&1 | tee /tmp/e2e_errors.txt; then
+                  PASS=false
+                  E2E_ERRS=$(tail -30 /tmp/e2e_errors.txt)
+                  SUMMARY="${SUMMARY}
+
+          E2E TEST ERRORS:
+          ${E2E_ERRS}"
+                fi
+              fi
+            fi
+          fi
+
+          echo "pass=$PASS" >> $GITHUB_OUTPUT
+          echo "error_summary<<EOFERR" >> $GITHUB_OUTPUT
+          echo "$SUMMARY" >> $GITHUB_OUTPUT
+          echo "EOFERR" >> $GITHUB_OUTPUT
+
+      - name: Post status comment
+        if: inputs.issue_number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          PASS="${{ steps.run-checks.outputs.pass }}"
+
+          if [ "$PASS" = "true" ]; then
+            npx tsx .github/scripts/lib/cli/pipeline.ts comment "${{ inputs.issue_number }}" "Verify and Fix — [attempt ${{ inputs.attempt }}/${{ inputs.max_attempts }}]($RUN_URL): all checks passed."
+          else
+            npx tsx .github/scripts/lib/cli/pipeline.ts comment "${{ inputs.issue_number }}" "Verify and Fix — [attempt ${{ inputs.attempt }}/${{ inputs.max_attempts }}]($RUN_URL): checks failed. $([ '${{ inputs.fix_enabled }}' = 'true' ] && echo 'Claude will attempt a fix.' || echo 'Fix not enabled.')"
+          fi
+
+  # Merge verified code into target branch, clean up temp branches, optionally create PR.
+  #
+  # Two modes:
+  #   1. work_branch set, no merge_into: merge work→branch (fix was on temp, merge back)
+  #   2. merge_into set: merge source→merge_into (claude.yml flow: tmp→PR branch)
+  #   Both can coexist: work→branch→merge_into (fix on temp, then merge into final target)
+  merge:
+    needs: verify
+    if: >-
+      needs.verify.outputs.pass == 'true' &&
+      (inputs.work_branch != '' || inputs.merge_into != '')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Determine merge target
+        id: target
+        run: |
+          # Final target: merge_into if set, otherwise branch
+          if [ -n "${{ inputs.merge_into }}" ]; then
+            echo "final=${{ inputs.merge_into }}" >> $GITHUB_OUTPUT
+          else
+            echo "final=${{ inputs.branch }}" >> $GITHUB_OUTPUT
+          fi
+
+          # Source of verified code: work_branch if set, otherwise branch
+          if [ -n "${{ inputs.work_branch }}" ]; then
+            echo "source=${{ inputs.work_branch }}" >> $GITHUB_OUTPUT
+          else
+            echo "source=${{ inputs.branch }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Checkout final target
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.target.outputs.final }}
+          fetch-depth: 0
+
+      - name: Setup pipeline TypeScript
+        uses: ./.github/actions/setup-pipeline-ts
+
+      - name: Configure git and auth
+        uses: ./.github/actions/setup-auth
+        with:
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Merge verified code into target
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          SOURCE="${{ steps.target.outputs.source }}"
+          FINAL="${{ steps.target.outputs.final }}"
+
+          if [ "$SOURCE" != "$FINAL" ]; then
+            git fetch origin "$SOURCE"
+            git merge "origin/$SOURCE" --no-edit
+          fi
+
+          # Merge master so the target branch is up to date
+          git fetch origin master
+          git merge origin/master --no-edit || {
+            echo "::warning::Merge conflict with master — taking master for infra files"
+            CONFLICTING=$(git diff --name-only --diff-filter=U || true)
+            for file in $CONFLICTING; do
+              if echo "$file" | grep -qE '^\.(github|claude)/|^docs/pipeline|^CLAUDE\.md|lock\.(yaml|json)$|Podfile\.lock$'; then
+                git checkout origin/master -- "$file"
+              else
+                git checkout --ours "$file"
+              fi
+              git add "$file"
+            done
+            git commit --no-edit
+          }
+
+          # Remove fix context log — only needed across fix attempts
+          if [ -f .claude-fix-log.md ]; then
+            git rm .claude-fix-log.md
+            git commit -m "chore: remove fix context log"
+          fi
+
+          REMOTE_EXISTS=$(git ls-remote --heads origin "$FINAL" 2>/dev/null | wc -l | tr -d ' ')
+          if [ "$REMOTE_EXISTS" -eq 0 ]; then
+            git push -u origin HEAD
+          else
+            npx tsx .github/scripts/lib/cli/pipeline.ts push "$FINAL"
+          fi
+
+          echo "Merged $SOURCE into $FINAL"
+
+      - name: Clean up source branches
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          FINAL="${{ steps.target.outputs.final }}"
+
+          # Delete work branch if it exists and differs from target
+          if [ -n "${{ inputs.work_branch }}" ] && [ "${{ inputs.work_branch }}" != "$FINAL" ]; then
+            gh api -X DELETE "repos/${{ github.repository }}/git/refs/heads/${{ inputs.work_branch }}" 2>/dev/null \
+              && echo "Deleted work branch: ${{ inputs.work_branch }}" || true
+          fi
+
+          # Delete source branch if merge_into was used (source is now merged)
+          if [ -n "${{ inputs.merge_into }}" ] && [ "${{ inputs.branch }}" != "$FINAL" ]; then
+            gh api -X DELETE "repos/${{ github.repository }}/git/refs/heads/${{ inputs.branch }}" 2>/dev/null \
+              && echo "Deleted source branch: ${{ inputs.branch }}" || true
+          fi
+
+          # Clean up stale tmp/ branches
+          gh api "repos/${{ github.repository }}/git/matching-refs/heads/tmp/" \
+            --jq '.[].ref' 2>/dev/null | sed 's|^refs/heads/||' | while read -r branch; do
+            if [ "$branch" != "${{ inputs.branch }}" ] && [ "$branch" != "${{ inputs.work_branch }}" ]; then
+              gh api -X DELETE "repos/${{ github.repository }}/git/refs/heads/$branch" 2>/dev/null \
+                && echo "Cleaned up $branch" || true
+            fi
+          done
+
+      - name: Create PR
+        if: inputs.create_pr
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          TARGET="${{ steps.target.outputs.final }}"
+          ISSUE_NUM="${{ inputs.issue_number }}"
+
+          # Check for existing PR
+          EXISTING=$(gh pr list --head "$TARGET" --state open --json number -q '.[0].number' 2>/dev/null || true)
+          if [ -n "$EXISTING" ]; then
+            echo "PR #$EXISTING already exists for $TARGET"
+            exit 0
+          fi
+
+          if [ -n "$ISSUE_NUM" ]; then
+            ISSUE_PR=$(gh pr list --state open --search "Closes #$ISSUE_NUM in:body" --json number \
+              -q '.[0].number' 2>/dev/null || true)
+            if [ -n "$ISSUE_PR" ]; then
+              echo "PR #$ISSUE_PR already exists for issue #$ISSUE_NUM — skipping"
+              exit 0
+            fi
+          fi
+
+          AHEAD=$(git rev-list --count "origin/master..origin/$TARGET" 2>/dev/null || echo "0")
+          if [ "$AHEAD" -eq 0 ]; then
+            echo "No commits ahead of master — skipping PR"
+            exit 0
+          fi
+
+          if [ -n "$ISSUE_NUM" ]; then
+            ISSUE_TITLE=$(gh issue view "$ISSUE_NUM" --json title -q '.title' 2>/dev/null || echo "")
+            PR_TITLE="${ISSUE_TITLE:-Implement issue #$ISSUE_NUM}"
+            PR_BODY="Closes #${ISSUE_NUM}
+
+          Autonomously implemented by Claude Code via GitHub Actions.
+
+          Generated with [Claude Code](https://claude.ai/code)"
+          else
+            PR_TITLE="Changes from Claude Code"
+            PR_BODY="Autonomously implemented by Claude Code via GitHub Actions."
+          fi
+
+          if ! gh pr create --head "$TARGET" --base master --title "$PR_TITLE" --body "$PR_BODY" 2>/tmp/pr_error.txt; then
+            if grep -qi "Head sha can't be blank\|No commits between\|Head ref must be" /tmp/pr_error.txt; then
+              echo "::warning::GitHub can't resolve branch ref — creating fresh branch"
+              FRESH="pr/issue-${ISSUE_NUM:-unknown}"
+              git push origin "HEAD:refs/heads/$FRESH" --force
+              gh pr create --head "$FRESH" --base master --title "$PR_TITLE" --body "$PR_BODY" \
+                || { echo "::error::Failed to create PR"; cat /tmp/pr_error.txt; exit 1; }
+            else
+              echo "::error::Failed to create PR"
+              cat /tmp/pr_error.txt
+              exit 1
+            fi
+          else
+            echo "PR created — waiting for reviews before merge"
+          fi
+
+  # When verify passes but there's no merge job to run (no work_branch,
+  # no merge_into), the verify job may have merged master locally to pass.
+  # The PR branch on GitHub is still behind master and CI still shows failure.
+  # Push the merged state back to the PR branch so fresh CI runs trigger.
+  retrigger:
+    needs: verify
+    if: >-
+      needs.verify.outputs.pass == 'true' &&
+      inputs.work_branch == '' &&
+      inputs.merge_into == '' &&
+      inputs.issue_number != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.branch }}
+          fetch-depth: 0
+
+      - name: Setup pipeline TypeScript
+        uses: ./.github/actions/setup-pipeline-ts
+
+      - name: Configure git and auth
+        uses: ./.github/actions/setup-auth
+        with:
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Merge master and push to PR branch
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          BRANCH="${{ inputs.branch }}"
+          PR_NUM="${{ inputs.issue_number }}"
+
+          git fetch origin master
+          BEHIND=$(git rev-list --count HEAD..origin/master 2>/dev/null || echo "0")
+
+          if [ "$BEHIND" -gt 0 ]; then
+            echo "PR branch is $BEHIND commits behind master — merging and pushing"
+            git merge origin/master --no-edit
+            npx tsx .github/scripts/lib/cli/pipeline.ts push "$BRANCH"
+            npx tsx .github/scripts/lib/cli/pipeline.ts comment "$PR_NUM" "Verify passed after merging master. Pushed updated branch to trigger fresh CI."
+          else
+            echo "Branch is up to date with master — re-running failed checks"
+            # Flaky test case: branch is current but check status is stale
+            CHECKS="${{ inputs.checks }}"
+            WORKFLOWS=()
+            if [ "$CHECKS" = "e2e" ] || [ "$CHECKS" = "all" ]; then
+              WORKFLOWS+=("E2E Smoke Tests")
+            fi
+            if [ "$CHECKS" = "ci" ] || [ "$CHECKS" = "all" ]; then
+              WORKFLOWS+=("Tests")
+            fi
+
+            RERAN=false
+            for WF_NAME in "${WORKFLOWS[@]}"; do
+              FAILED_RUN=$(gh run list --repo "${{ github.repository }}" --branch "$BRANCH" \
+                --workflow "$WF_NAME" --status failure --limit 1 \
+                --json databaseId -q '.[0].databaseId' 2>/dev/null || echo "")
+
+              if [ -n "$FAILED_RUN" ]; then
+                echo "Re-running failed $WF_NAME run #$FAILED_RUN"
+                gh run rerun "$FAILED_RUN" --repo "${{ github.repository }}" --failed 2>/dev/null && RERAN=true || true
+              fi
+            done
+
+            if [ "$RERAN" = "true" ]; then
+              npx tsx .github/scripts/lib/cli/pipeline.ts comment "$PR_NUM" "Verify passed (flaky test). Re-running failed CI to update check statuses."
+            else
+              echo "No failed runs to re-run — dispatching auto-merge as fallback"
+              npx tsx .github/scripts/lib/cli/pipeline.ts dispatch "auto-merge.yml"
+            fi
+          fi
+
+  fix:
+    needs: verify
+    if: >-
+      needs.verify.outputs.pass == 'false' &&
+      inputs.fix_enabled &&
+      inputs.attempt < inputs.max_attempts
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Determine work branch
+        id: work
+        run: |
+          if [ -n "${{ inputs.work_branch }}" ]; then
+            # Subsequent attempt — reuse existing temp branch
+            echo "branch=${{ inputs.work_branch }}" >> $GITHUB_OUTPUT
+            echo "created=false" >> $GITHUB_OUTPUT
+          else
+            # First fix — create temp branch from target
+            WORK_BRANCH="tmp/vf-$(echo '${{ inputs.branch }}' | tr '/' '-')-${{ github.run_id }}"
+            echo "branch=$WORK_BRANCH" >> $GITHUB_OUTPUT
+            echo "created=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Checkout source branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.work.outputs.created == 'true' && inputs.branch || steps.work.outputs.branch }}
+          fetch-depth: 0
+
+      - name: Setup pipeline TypeScript
+        uses: ./.github/actions/setup-pipeline-ts
+
+      - name: Create work branch
+        if: steps.work.outputs.created == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          WORK_BRANCH="${{ steps.work.outputs.branch }}"
+          git push origin "HEAD:refs/heads/$WORK_BRANCH"
+          git checkout -b "$WORK_BRANCH"
+          echo "Created work branch: $WORK_BRANCH"
+
+      - name: Configure git and auth
+        uses: ./.github/actions/setup-auth
+        with:
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Merge master into branch
+        uses: ./.github/actions/merge-master
+        with:
+          strategy: abort
+
+      - name: Set up Node and pnpm
+        uses: ./.github/actions/setup-node
+
+      - name: Collect commit context
+        id: context
+        run: |
+          COMMIT_LOG=$(git log --oneline origin/master..HEAD 2>/dev/null | head -20 || echo "(no commits)")
+          DIFF_STAT=$(git diff --stat origin/master..HEAD 2>/dev/null | tail -30 || echo "(no diff)")
+
+          echo "commit_context<<EOFCTX" >> $GITHUB_OUTPUT
+          echo "BRANCH COMMIT HISTORY (what was changed and why — use this to decide whether to fix source code or update tests):" >> $GITHUB_OUTPUT
+          echo "$COMMIT_LOG" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          echo "FILES CHANGED vs master:" >> $GITHUB_OUTPUT
+          echo "$DIFF_STAT" >> $GITHUB_OUTPUT
+          echo "EOFCTX" >> $GITHUB_OUTPUT
+
+      - name: Save pre-fix HEAD
+        id: pre_fix
+        run: echo "head=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Claude fix
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GH_PAT }}
+          prompt: |
+            Fix attempt ${{ inputs.attempt }}/${{ inputs.max_attempts }}. Fix the errors below, then push.
+
+            ${{ steps.context.outputs.commit_context }}
+
+            ${{ inputs.fix_context }}
+
+            ERRORS:
+            ${{ needs.verify.outputs.error_summary }}
+
+            STEPS:
+            1. If .claude-fix-log.md exists, read it first — do NOT repeat failed approaches.
+            2. If resolving merge conflicts, always take master's version for files not related to the story (e.g. .github/workflows/*, docs/pipeline-architecture.md). Use `git checkout origin/master -- <file>` for those.
+            3. Fix the errors. Do NOT use `any` types. Fix ONE FILE AT A TIME, run `pnpm typecheck` after each.
+            4. Run `pnpm typecheck && pnpm test` to confirm ZERO errors.
+            5. git add, commit, push: `git push origin HEAD:refs/heads/${{ steps.work.outputs.branch }}`
+            6. Update .claude-fix-log.md with what you fixed and whether checks pass now.
+
+            Push after each milestone — unpushed work is lost on timeout.
+          show_full_output: true
+          claude_args: --allowedTools "Edit" "MultiEdit" "Glob" "Grep" "LS" "Read" "Write" "Bash(*)"
+          settings: |
+            {
+              "maxTurns": 15
+            }
+
+      - name: Check for permission issues
+        id: health
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          LOG="/home/runner/work/_temp/claude-execution-output.json"
+          if [ -f "$LOG" ]; then
+            DENIALS=$(grep -o '"permission_denials_count":[0-9]*' "$LOG" | grep -o '[0-9]*' || echo "0")
+            TURNS=$(grep -o '"num_turns":[0-9]*' "$LOG" | grep -o '[0-9]*' || echo "0")
+            COST=$(grep -o '"total_cost_usd":[0-9.]*' "$LOG" | grep -o '[0-9.]*' || echo "0")
+            echo "Permission denials: $DENIALS, Turns: $TURNS, Cost: \$$COST"
+
+            if [ "$DENIALS" -gt 5 ]; then
+              echo "::error::Claude hit $DENIALS permission denials in $TURNS turns — allowedTools config is broken."
+              ISSUE_NUM="${{ inputs.issue_number }}"
+              if [ -n "$ISSUE_NUM" ]; then
+                npx tsx .github/scripts/lib/cli/pipeline.ts comment "$ISSUE_NUM" "Fix attempt ${{ inputs.attempt }}/${{ inputs.max_attempts }} aborted: Claude hit **$DENIALS permission denials** in $TURNS turns (\$$COST wasted). The \`allowedTools\` config is broken — retrying won't help."
+              fi
+              exit 1
+            fi
+          fi
+
+      - name: Push fixes to work branch
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          WORK_BRANCH="${{ steps.work.outputs.branch }}"
+          npx tsx .github/scripts/lib/cli/pipeline.ts setup-git-auth
+
+          # Stage fix log if it was created/updated
+          if [ -f .claude-fix-log.md ]; then
+            git add .claude-fix-log.md
+          fi
+
+          npx tsx .github/scripts/lib/cli/pipeline.ts commit "fix: resolve check errors (attempt ${{ inputs.attempt }})" || true
+
+          npx tsx .github/scripts/lib/cli/pipeline.ts push "$WORK_BRANCH" "${{ steps.pre_fix.outputs.head }}"
+
+          # Detect if Claude produced no changes at all
+          LOCAL_HEAD=$(git rev-parse HEAD)
+          PRE_FIX_HEAD="${{ steps.pre_fix.outputs.head }}"
+
+          git fetch origin "$WORK_BRANCH" 2>/dev/null || true
+          REMOTE_HEAD=$(git rev-parse "origin/$WORK_BRANCH" 2>/dev/null || echo "none")
+
+          if [ "$LOCAL_HEAD" = "$PRE_FIX_HEAD" ] && [ "$REMOTE_HEAD" = "$PRE_FIX_HEAD" ]; then
+            echo "::warning::Claude produced no changes — skipping retry"
+            echo "no_changes=true" >> $GITHUB_ENV
+          fi
+
+      - name: Trigger next attempt
+        if: env.no_changes != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          NEXT_ATTEMPT=$(( ${{ inputs.attempt }} + 1 ))
+          WORK_BRANCH="${{ steps.work.outputs.branch }}"
+
+          DISPATCH_ARGS=(
+            -f branch="${{ inputs.branch }}"
+            -f work_branch="$WORK_BRANCH"
+            -f issue_number="${{ inputs.issue_number }}"
+            -f checks="${{ inputs.checks }}"
+            -f fix_enabled="true"
+            -f max_attempts="${{ inputs.max_attempts }}"
+            -f attempt="$NEXT_ATTEMPT"
+            -f fix_context="${{ inputs.fix_context }}"
+          )
+
+          # Thread merge inputs through retries
+          if [ -n "${{ inputs.merge_into }}" ]; then
+            DISPATCH_ARGS+=(-f merge_into="${{ inputs.merge_into }}")
+          fi
+          if [ "${{ inputs.create_pr }}" = "true" ]; then
+            DISPATCH_ARGS+=(-f create_pr="true")
+          fi
+
+          npx tsx .github/scripts/lib/cli/pipeline.ts dispatch "verify-and-fix.yml" "${DISPATCH_ARGS[@]}"
+
+          echo "Triggered verify-and-fix attempt $NEXT_ATTEMPT/${{ inputs.max_attempts }}"
+
+      - name: Comment if no changes
+        if: env.no_changes == 'true' && inputs.issue_number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          npx tsx .github/scripts/lib/cli/pipeline.ts comment "${{ inputs.issue_number }}" "Fix attempt ${{ inputs.attempt }}/${{ inputs.max_attempts }} produced no changes — Claude could not fix the errors. Remaining attempts skipped. Branch: [\`${{ inputs.branch }}\`](https://github.com/${{ github.repository }}/tree/${{ inputs.branch }})"
+
+      # Rescue step: runs ONLY when the fix job is cancelled (e.g. timeout)
+      - name: Rescue work on timeout
+        if: cancelled()
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          WORK_BRANCH="${{ steps.work.outputs.branch }}"
+          npx tsx .github/scripts/lib/cli/pipeline.ts setup-git-auth
+
+          # Commit any uncommitted work
+          git add -A -- ':!output.txt' ':!node_modules'
+          if [ -n "$(git diff --cached --name-only)" ]; then
+            git commit -m "wip: rescue work from timed-out fix attempt ${{ inputs.attempt }}
+
+          Co-authored-by: Claude <noreply@anthropic.com>"
+          fi
+
+          npx tsx .github/scripts/lib/cli/pipeline.ts push "$WORK_BRANCH" || true
+
+          # Continue the fix loop
+          NEXT_ATTEMPT=$(( ${{ inputs.attempt }} + 1 ))
+          if [ "$NEXT_ATTEMPT" -le "${{ inputs.max_attempts }}" ]; then
+            DISPATCH_ARGS=(
+              -f branch="${{ inputs.branch }}"
+              -f work_branch="$WORK_BRANCH"
+              -f issue_number="${{ inputs.issue_number }}"
+              -f checks="${{ inputs.checks }}"
+              -f fix_enabled="true"
+              -f max_attempts="${{ inputs.max_attempts }}"
+              -f attempt="$NEXT_ATTEMPT"
+              -f fix_context="${{ inputs.fix_context }}"
+            )
+
+            if [ -n "${{ inputs.merge_into }}" ]; then
+              DISPATCH_ARGS+=(-f merge_into="${{ inputs.merge_into }}")
+            fi
+            if [ "${{ inputs.create_pr }}" = "true" ]; then
+              DISPATCH_ARGS+=(-f create_pr="true")
+            fi
+
+            npx tsx .github/scripts/lib/cli/pipeline.ts dispatch "verify-and-fix.yml" "${DISPATCH_ARGS[@]}"
+          fi
+
+          if [ -n "${{ inputs.issue_number }}" ]; then
+            npx tsx .github/scripts/lib/cli/pipeline.ts comment "${{ inputs.issue_number }}" "Fix attempt ${{ inputs.attempt }}/${{ inputs.max_attempts }} timed out. Work saved to [\`$WORK_BRANCH\`](https://github.com/${{ github.repository }}/tree/$WORK_BRANCH). Continuing with attempt $NEXT_ATTEMPT."
+          fi
+
+  give-up:
+    needs: verify
+    if: >-
+      needs.verify.outputs.pass == 'false' &&
+      (inputs.attempt >= inputs.max_attempts || !inputs.fix_enabled)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout scripts
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            .github/scripts
+            .github/actions
+          sparse-checkout-cone-mode: false
+
+      - name: Setup pipeline TypeScript
+        uses: ./.github/actions/setup-pipeline-ts
+
+      - name: Comment failure
+        if: inputs.issue_number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          ISSUE_NUM="${{ inputs.issue_number }}"
+          BRANCH="${{ inputs.branch }}"
+          WORK="${{ inputs.work_branch }}"
+          MAX="${{ inputs.max_attempts }}"
+
+          # Point to work branch if it exists, otherwise target
+          WORK_LINK="${WORK:-$BRANCH}"
+
+          if [ "${{ inputs.fix_enabled }}" = "true" ]; then
+            BODY="Checks failed after $MAX fix attempts. Claude's work is on [\`${WORK_LINK}\`](https://github.com/${{ github.repository }}/tree/${WORK_LINK}). Triggering Pipeline Doctor to diagnose."
+            npx tsx .github/scripts/lib/cli/pipeline.ts comment "$ISSUE_NUM" "$BODY"
+
+            # Collect failed run IDs
+            FAILED_RUNS=$(gh run list --repo "${{ github.repository }}" --workflow verify-and-fix.yml \
+              --json databaseId,displayTitle \
+              -q "[.[] | select(.displayTitle | contains(\"#${ISSUE_NUM}\"))] | .[].databaseId" \
+              2>/dev/null | tr '\n' ',' | sed 's/,$//' || echo "")
+
+            npx tsx .github/scripts/lib/cli/pipeline.ts dispatch "pipeline-doctor.yml" \
+              -f issue_number="$ISSUE_NUM" \
+              -f trigger_source="verify-and-fix" \
+              -f failed_run_ids="$FAILED_RUNS"
+          else
+            npx tsx .github/scripts/lib/cli/pipeline.ts comment "$ISSUE_NUM" "Checks failed on [\`${WORK_LINK}\`](https://github.com/${{ github.repository }}/tree/${WORK_LINK}). Auto-fix was not enabled."
+          fi
