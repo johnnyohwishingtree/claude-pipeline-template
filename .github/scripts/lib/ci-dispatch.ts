@@ -87,7 +87,7 @@ export async function dispatchPRFix(
   );
 
   const fixContext = opts.checks === 'e2e'
-    ? `E2E smoke tests failed on PR #${opts.pr}. Failed jobs: ${failedItems}. Run: ${opts.runUrl}. Common E2E issues: native modules need web mocks in e2e/mocks/ + aliases in webpack.config.js.`
+    ? `E2E tests failed on PR #${opts.pr}. Failed jobs: ${failedItems}. Run: ${opts.runUrl}.`
     : `CI failed on PR #${opts.pr}. Failed steps: ${failedItems}. Run: ${opts.runUrl}`;
 
   await github.dispatchWorkflow('verify-and-fix.yml', 'master', {
