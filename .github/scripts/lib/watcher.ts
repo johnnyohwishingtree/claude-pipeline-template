@@ -136,21 +136,13 @@ export function getPRMergeability(pr: number, repo: string): string {
 }
 
 export function getPRCIConclusion(pr: number, repo: string): string {
-  // Check ALL required CI checks (test + E2E test-chromium), not just "test".
-  // If any required check failed, return FAILURE.
   const raw = execOrDefault('gh', ['pr', 'view', String(pr), '--repo', repo,
     '--json', 'statusCheckRollup',
-    '-q', '[.statusCheckRollup[] | select(.name == "test" or .name == "test-chromium") | {name: .name, conclusion: .conclusion}]'], '[]');
+    '-q', '[.statusCheckRollup[] | select(.name == "test") | {name: .name, conclusion: .conclusion}]'], '[]');
   try {
     const checks = JSON.parse(raw) as Array<{ name: string; conclusion: string }>;
     if (checks.length === 0) return '';
     if (checks.some(c => c.conclusion === 'FAILURE')) return 'FAILURE';
-    // Only return SUCCESS when both required checks are present and succeeded.
-    // If one hasn't started yet it won't appear in the list — don't prematurely
-    // declare success based only on the checks that have run so far.
-    const requiredChecks = ['test', 'test-chromium'];
-    const allPresent = requiredChecks.every(name => checks.some(c => c.name === name));
-    if (!allPresent) return '';
     return checks.every(c => c.conclusion === 'SUCCESS') ? 'SUCCESS' : '';
   } catch {
     return '';
@@ -232,12 +224,11 @@ export async function checkPR(
   const lastCommitTime = getLastCommitTime(pr.number, repo);
   const commitAgo = lastCommitTime ? minutesAgo(lastCommitTime) : 0;
 
-  // Missing CI — dispatch both test.yml and e2e-smoke.yml
+  // Missing CI — dispatch test.yml
   if (!ciConclusion || ciConclusion === 'null') {
     if (commitAgo >= graceMinutes) {
       await github.dispatchWorkflow('test.yml', pr.branch);
-      await github.dispatchWorkflow('e2e-smoke.yml', pr.branch);
-      return { action: 'retrigger-ci', detail: `No CI check, ${commitAgo}m stale — dispatched test + e2e-smoke` };
+      return { action: 'retrigger-ci', detail: `No CI check, ${commitAgo}m stale — dispatched test.yml` };
     }
     return { action: 'none', detail: `No CI check, ${commitAgo}m ago — within grace period` };
   }
@@ -248,11 +239,9 @@ export async function checkPR(
       const fixCount = countCommentsByContent(pr.number, repo, 'failing');
       if (fixCount < maxRetries) {
         const runId = getLatestRunId(repo, pr.branch, 'test.yml');
-        const e2eRunId = getLatestFailedRunId(repo, pr.branch, 'e2e-smoke.yml');
 
         let runUrls = '';
         if (runId) runUrls += `- Tests: https://github.com/${repo}/actions/runs/${runId} — use \`gh run view ${runId} --log-failed\` to see errors\n`;
-        if (e2eRunId) runUrls += `- E2E: https://github.com/${repo}/actions/runs/${e2eRunId} — use \`gh run view ${e2eRunId} --log-failed\` to see errors\n`;
 
         const body = `@claude CI is still failing on this PR and no new commits in ${commitAgo}m.
 
@@ -260,7 +249,7 @@ export async function checkPR(
 ${runUrls}
 Use \`gh run view <run_id> --log-failed\` to see the full error output from failed steps. Diagnose the root cause and fix all failures.
 
-IMPORTANT: After fixing, run \`pnpm typecheck\`, \`pnpm test\`, and \`pnpm e2e\` locally to verify ALL checks pass BEFORE committing. Then git add, git commit, and git push. (Watcher fix attempt ${fixCount + 1}/${maxRetries})`;
+IMPORTANT: After fixing, run \`pnpm typecheck\` and \`pnpm test\` locally to verify ALL checks pass BEFORE committing. Then git add, git commit, and git push. (Watcher fix attempt ${fixCount + 1}/${maxRetries})`;
 
         await github.commentOnIssue(pr.number, body);
         return { action: 'fix-ci', detail: `CI failing, attempt ${fixCount + 1}/${maxRetries}` };

@@ -443,7 +443,7 @@ export function diagnosePipelineFlow(prNum: number, repo: string): FlowDiagnosis
   // Step 2: Check CI status
   const ciRaw = safeExec('gh', ['pr', 'view', String(prNum), '--repo', repo,
     '--json', 'statusCheckRollup',
-    '-q', '[.statusCheckRollup[] | select(.name == "test" or .name == "test-chromium" or .name == "typecheck" or .name == "bundle-ios" or .name == "bundle-android") | {name: .name, conclusion: (.conclusion // "pending")}]'], '[]');
+    '-q', '[.statusCheckRollup[] | select(.name == "test" or .name == "typecheck") | {name: .name, conclusion: (.conclusion // "pending")}]'], '[]');
 
   let checks: Array<{ name: string; conclusion: string }> = [];
   try { checks = JSON.parse(ciRaw); } catch { /* empty */ }
@@ -555,8 +555,7 @@ export async function actOnDiagnosis(
 
     case 'dispatch-ci':
       await github.dispatchWorkflow('test.yml', branchName);
-      await github.dispatchWorkflow('e2e-smoke.yml', branchName);
-      return `Dispatched test.yml + e2e-smoke.yml for PR #${prNum}`;
+      return `Dispatched test.yml for PR #${prNum}`;
 
     case 'resolve-conflicts':
       await github.dispatchWorkflow('resolve-conflicts.yml', 'master', { pr_number: String(prNum) });

@@ -38,14 +38,12 @@ describe('runVerifyChecks', () => {
   it('returns all-pass when every check succeeds', () => {
     mockAllPass();
 
-    const result = runVerifyChecks({ skipNative: true });
+    const result = runVerifyChecks();
 
     expect(result.pass).toBe(true);
     expect(result.checks.lint.pass).toBe(true);
     expect(result.checks.typecheck.pass).toBe(true);
-    expect(result.checks.bundle.pass).toBe(true);
     expect(result.checks.test.pass).toBe(true);
-    expect(result.checks.native_deps.pass).toBe(true);
   });
 
   describe('lint check', () => {
@@ -59,7 +57,7 @@ describe('runVerifyChecks', () => {
       mockedExistsSync.mockReturnValue(false);
       mockedReadFileSync.mockReturnValue('{"dependencies":{}, "devDependencies":{}}');
 
-      const result = runVerifyChecks({ skipNative: true });
+      const result = runVerifyChecks();
 
       expect(result.pass).toBe(false);
       expect(result.checks.lint.pass).toBe(false);
@@ -76,7 +74,7 @@ describe('runVerifyChecks', () => {
       mockedExistsSync.mockReturnValue(false);
       mockedReadFileSync.mockReturnValue('{"dependencies":{}, "devDependencies":{}}');
 
-      const result = runVerifyChecks({ lintOnlyChanged: true, skipNative: true });
+      const result = runVerifyChecks({ lintOnlyChanged: true });
 
       expect(result.pass).toBe(true);
     });
@@ -86,7 +84,7 @@ describe('runVerifyChecks', () => {
       mockedExistsSync.mockReturnValue(false);
       mockedReadFileSync.mockReturnValue('{"dependencies":{}, "devDependencies":{}}');
 
-      const result = runVerifyChecks({ lintOnlyChanged: true, skipNative: true });
+      const result = runVerifyChecks({ lintOnlyChanged: true });
 
       expect(result.pass).toBe(true);
       expect(result.checks.lint.pass).toBe(true);
@@ -104,21 +102,11 @@ describe('runVerifyChecks', () => {
       mockedExistsSync.mockReturnValue(false);
       mockedReadFileSync.mockReturnValue('{"dependencies":{}, "devDependencies":{}}');
 
-      const result = runVerifyChecks({ skipNative: true });
+      const result = runVerifyChecks();
 
       expect(result.pass).toBe(false);
       expect(result.checks.typecheck.pass).toBe(false);
       expect(result.checks.typecheck.errors).toContain('error TS2304');
-    });
-  });
-
-  describe('bundle check', () => {
-    it('passes by default (no-op until overridden)', () => {
-      mockAllPass();
-
-      const result = runVerifyChecks({ skipNative: true });
-
-      expect(result.checks.bundle.pass).toBe(true);
     });
   });
 
@@ -133,29 +121,11 @@ describe('runVerifyChecks', () => {
       mockedExistsSync.mockReturnValue(false);
       mockedReadFileSync.mockReturnValue('{"dependencies":{}, "devDependencies":{}}');
 
-      const result = runVerifyChecks({ skipNative: true });
+      const result = runVerifyChecks();
 
       expect(result.pass).toBe(false);
       expect(result.checks.test.pass).toBe(false);
       expect(result.checks.test.errors).toContain('FAIL');
-    });
-  });
-
-  describe('native dependency check', () => {
-    it('passes by default (no-op until overridden)', () => {
-      mockAllPass();
-
-      const result = runVerifyChecks();
-
-      expect(result.checks.native_deps.pass).toBe(true);
-    });
-
-    it('skips native check when skipNative is true', () => {
-      mockAllPass();
-
-      const result = runVerifyChecks({ skipNative: true });
-
-      expect(result.checks.native_deps.pass).toBe(true);
     });
   });
 
@@ -170,13 +140,12 @@ describe('runVerifyChecks', () => {
       mockedExistsSync.mockReturnValue(false);
       mockedReadFileSync.mockReturnValue('{"dependencies":{}, "devDependencies":{}}');
 
-      const result = runVerifyChecks({ failFast: true, skipNative: true });
+      const result = runVerifyChecks({ failFast: true });
 
       expect(result.pass).toBe(false);
       expect(result.checks.lint.pass).toBe(false);
       // Subsequent checks should still show as pass (default) because they were skipped
       expect(result.checks.typecheck.pass).toBe(true);
-      expect(result.checks.bundle.pass).toBe(true);
       expect(result.checks.test.pass).toBe(true);
     });
   });
@@ -195,7 +164,7 @@ describe('runVerifyChecks', () => {
       mockedExistsSync.mockReturnValue(false);
       mockedReadFileSync.mockReturnValue('{"dependencies":{}, "devDependencies":{}}');
 
-      const result = runVerifyChecks({ skipNative: true });
+      const result = runVerifyChecks();
 
       expect(result.summary).toContain('LINT ERRORS');
       expect(result.summary).toContain('TYPECHECK ERRORS');
@@ -204,7 +173,7 @@ describe('runVerifyChecks', () => {
     it('has empty summary when all checks pass', () => {
       mockAllPass();
 
-      const result = runVerifyChecks({ skipNative: true });
+      const result = runVerifyChecks();
 
       expect(result.summary).toBe('');
     });
@@ -214,16 +183,14 @@ describe('runVerifyChecks', () => {
     it('returns correct VerifyChecksOutput shape', () => {
       mockAllPass();
 
-      const result: VerifyChecksOutput = runVerifyChecks({ skipNative: true });
+      const result: VerifyChecksOutput = runVerifyChecks();
 
       expect(result).toHaveProperty('pass');
       expect(result).toHaveProperty('checks');
       expect(result).toHaveProperty('summary');
       expect(result.checks).toHaveProperty('lint');
       expect(result.checks).toHaveProperty('typecheck');
-      expect(result.checks).toHaveProperty('bundle');
       expect(result.checks).toHaveProperty('test');
-      expect(result.checks).toHaveProperty('native_deps');
 
       for (const check of Object.values(result.checks)) {
         expect(check).toHaveProperty('pass');

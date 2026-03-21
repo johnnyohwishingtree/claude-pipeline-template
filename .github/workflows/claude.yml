@@ -275,4 +275,4 @@ jobs:
           echo "Triggered verify-and-fix"
 
       # Auto-merge removed — auto-merge.yml is the single gate that
-      # merges PRs only after Tests + E2E + approval + threads resolved.
+      # merges PRs only after Tests + approval + threads resolved.

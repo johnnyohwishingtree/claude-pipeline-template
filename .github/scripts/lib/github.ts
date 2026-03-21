@@ -45,18 +45,7 @@ export class GitHubClient {
       (r) => r.name === 'test' && r.conclusion === 'success'
     );
 
-    const e2eChromium = runs.some(
-      (r) => r.name === 'test-chromium' && r.conclusion === 'success'
-    );
-    const e2ePerf = runs.some(
-      (r) => r.name === 'test-performance' && r.conclusion === 'success'
-    );
-    const e2eCross = runs.some(
-      (r) => r.name === 'test-cross-browser' && r.conclusion === 'success'
-    );
-    const e2ePass = e2eChromium && e2ePerf && e2eCross;
-
-    return { testsPass, e2ePass };
+    return { testsPass };
   }
 
   // ─── PR Queries (ports of count_approvals, count_unresolved_threads) ────

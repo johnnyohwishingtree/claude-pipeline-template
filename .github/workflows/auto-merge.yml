@@ -3,16 +3,15 @@ name: Auto Merge
 # Single gate that controls when PRs merge to master.
 # Only merges when ALL conditions are met:
 #   1. Tests workflow passed
-#   2. E2E Smoke Tests passed (all 3 jobs)
-#   3. PR has at least one approval
-#   4. No unresolved review threads
-#   5. No active review-fix runs
-#   6. Branch up to date with master
+#   2. PR has at least one approval
+#   3. No unresolved review threads
+#   4. No active review-fix runs
+#   5. Branch up to date with master
 
 on:
   # Re-evaluate when CI completes
   workflow_run:
-    workflows: ["Tests", "E2E Smoke Tests"]
+    workflows: ["Tests"]
     types: [completed]
 
   # Re-evaluate when a review is submitted

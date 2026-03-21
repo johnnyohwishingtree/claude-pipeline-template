@@ -11,7 +11,7 @@ This folder contains shared TypeScript modules for GitHub Actions workflows, fol
 | `lib/merge-gate.ts` | Merge readiness evaluator (6 conditions) |
 | `lib/state-machine.ts` | Pipeline state persistence (JSON in GitHub issue comments) |
 | `lib/workflow.ts` | Temporal-like activity runner with state tracking and retry policies |
-| `lib/verify-checks.ts` | CI check verification (lint, typecheck, bundle, test, native deps) |
+| `lib/verify-checks.ts` | CI check verification (lint, typecheck, test) |
 | `lib/ci-dispatch.ts` | CI failure dispatch (label check, failed items extraction, verify-and-fix dispatch) |
 | `lib/watcher.ts` | Pipeline watcher logic (slot counting, PR health, story retrigger, epic staleness, orphan cleanup) |
 | `lib/doctor.ts` | Pipeline doctor evidence collection and failure reproduction |

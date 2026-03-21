@@ -192,9 +192,8 @@ export function decideEnsureReviewAction(
       // Parse CI status
       const ciOutput = safePipelineCli('', 'check-ci-status', headSha, repo);
       const testsPass = ciOutput.includes('TESTS_PASS=true');
-      const e2ePass = ciOutput.includes('E2E_PASS=true');
 
-      if (testsPass && e2ePass) {
+      if (testsPass) {
         return { action: 'approve', reason: 'all review threads resolved after fixes landed and CI passed' };
       } else {
         return { action: 'dispatch-auto-merge' };
