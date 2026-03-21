@@ -181,7 +181,7 @@ describe('review-guardian', () => {
         '2', // review count
         '0', // unresolved threads
         'abc123', // headRefOid
-        'TESTS_PASS=true\nE2E_PASS=true', // check-ci-status
+        'TESTS_PASS=true', // check-ci-status
       ]);
       const result = decideEnsureReviewAction(10, 'owner/repo');
       expect(result.action).toBe('approve');
@@ -193,7 +193,7 @@ describe('review-guardian', () => {
         '1', // review count
         '0', // unresolved threads
         'abc123', // headRefOid
-        'TESTS_PASS=true\nE2E_PASS=false', // check-ci-status
+        'TESTS_PASS=false', // check-ci-status — tests not passing
       ]);
       const result = decideEnsureReviewAction(10, 'owner/repo');
       expect(result.action).toBe('dispatch-auto-merge');

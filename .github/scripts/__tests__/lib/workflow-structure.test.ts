@@ -400,22 +400,6 @@ describe('workflow structure regressions', () => {
     });
   });
 
-  // Bug: verify-and-fix piped `npx playwright test` to `tee`, which swallows
-  // the exit code. PRs with failing E2E were reported as passing.
-  describe('verify-and-fix captures playwright exit code correctly', () => {
-    it('uses pipefail or PIPESTATUS to detect playwright failures through tee', () => {
-      const content = readFileSync(join(WORKFLOWS_DIR, 'verify-and-fix.yml'), 'utf-8');
-
-      const playwrightPipedToTee = content.match(/playwright test.*\|.*tee/s);
-      if (playwrightPipedToTee) {
-        expect(
-          content,
-          'verify-and-fix must use pipefail or PIPESTATUS when piping playwright to tee',
-        ).toMatch(/pipefail|PIPESTATUS/);
-      }
-    });
-  });
-
   // Bug: review-relay dispatches review-fix for clean reviews (no inline
   // comments, just a summary body). This causes a deadlock: request-approval
   // defers because review-fix is "active", but review-fix produces no changes,
@@ -447,6 +431,5 @@ describe('workflow structure regressions', () => {
     });
   });
 
-  // Note: e2e-smoke.yml is project-specific. Add your own E2E workflow
-  // and corresponding structural test when needed.
+  // Add structural tests for additional workflows as needed.
 });

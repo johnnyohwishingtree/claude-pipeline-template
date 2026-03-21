@@ -224,9 +224,7 @@ async function main() {
       if (!sha) { console.error('Usage: pipeline check-ci-status <sha> [repo]'); process.exit(1); }
       const github = getGitHub(repo);
       const status = await github.checkCIStatus(sha);
-      // Output in same format as lib.sh for compatibility
       console.log(`TESTS_PASS=${status.testsPass}`);
-      console.log(`E2E_PASS=${status.e2ePass}`);
       break;
     }
 
@@ -276,10 +274,6 @@ async function main() {
         console.error('Usage: pipeline ci-dispatch-pr <pr> <branch> <run_id> <run_url> <checks> [extra_context]');
         process.exit(1);
       }
-      if (checks !== 'ci' && checks !== 'e2e') {
-        console.error(`Invalid checks value "${checks}": must be "ci" or "e2e"`);
-        process.exit(1);
-      }
       const github = getGitHub();
       const result = await dispatchPRFix(github, {
         pr,
@@ -287,26 +281,21 @@ async function main() {
         runId,
         runUrl,
         repo: getRepo(),
-        checks: checks as 'ci' | 'e2e',
         extraContext: extraParts.length > 0 ? extraParts.join(' ') : undefined,
       });
       if (result.skipped) {
         console.log('Skipped: PR has no-autofix label');
       } else {
-        console.log(`Dispatched verify-and-fix for ${checks} failures: ${result.failedItems}`);
+        console.log(`Dispatched verify-and-fix for CI failures: ${result.failedItems}`);
       }
       break;
     }
 
     case 'ci-dispatch-master': {
-      // Usage: pipeline ci-dispatch-master <run_id> <run_url> <checks> <branch_prefix> [extra_context]
-      const [runId, runUrl, checks, branchPrefix, ...extraParts] = args;
-      if (!runId || !runUrl || !checks || !branchPrefix) {
-        console.error('Usage: pipeline ci-dispatch-master <run_id> <run_url> <checks> <branch_prefix> [extra_context]');
-        process.exit(1);
-      }
-      if (checks !== 'ci' && checks !== 'e2e') {
-        console.error(`Invalid checks value "${checks}": must be "ci" or "e2e"`);
+      // Usage: pipeline ci-dispatch-master <run_id> <run_url> <branch_prefix> [extra_context]
+      const [runId, runUrl, branchPrefix, ...extraParts] = args;
+      if (!runId || !runUrl || !branchPrefix) {
+        console.error('Usage: pipeline ci-dispatch-master <run_id> <run_url> <branch_prefix> [extra_context]');
         process.exit(1);
       }
       const github = getGitHub();
@@ -314,7 +303,6 @@ async function main() {
         runId,
         runUrl,
         repo: getRepo(),
-        checks: checks as 'ci' | 'e2e',
         branchPrefix,
         extraContext: extraParts.length > 0 ? extraParts.join(' ') : undefined,
       });
@@ -691,7 +679,7 @@ async function main() {
     case 'update-branch': {
       // Update a PR branch to latest master and dispatch CI.
       // GitHub's pull_request event doesn't reliably fire after branch
-      // updates, so we explicitly dispatch test.yml + e2e-smoke.yml.
+      // updates, so we explicitly dispatch test.yml.
       const [prStr] = args;
       const pr = parseInt(prStr, 10);
       if (isNaN(pr)) { console.error('Usage: pipeline update-branch <pr>'); process.exit(1); }
@@ -702,8 +690,7 @@ async function main() {
       await github.updateBranch(pr);
       console.log('Branch updated — dispatching CI');
       await github.dispatchWorkflow('test.yml', branchName);
-      await github.dispatchWorkflow('e2e-smoke.yml', branchName);
-      console.log('Dispatched test.yml + e2e-smoke.yml');
+      console.log('Dispatched test.yml');
       break;
     }
 

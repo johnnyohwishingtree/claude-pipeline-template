@@ -5,7 +5,6 @@ import type { GitHubClient } from '../../lib/github.js';
 function createMockGitHub(
   overrides: Partial<{
     testsPass: boolean;
-    e2ePass: boolean;
     approvals: number;
     unresolvedThreads: number;
     reviewFixActive: boolean;
@@ -14,7 +13,6 @@ function createMockGitHub(
 ): GitHubClient {
   const defaults = {
     testsPass: true,
-    e2ePass: true,
     approvals: 1,
     unresolvedThreads: 0,
     reviewFixActive: false,
@@ -30,7 +28,6 @@ function createMockGitHub(
     }),
     checkCIStatus: vi.fn().mockResolvedValue({
       testsPass: config.testsPass,
-      e2ePass: config.e2ePass,
     }),
     countApprovals: vi.fn().mockResolvedValue(config.approvals),
     countUnresolvedThreads: vi
@@ -50,7 +47,6 @@ describe('evaluateMergeGate', () => {
     expect(result.failingConditions).toHaveLength(0);
     expect(result.conditions).toEqual({
       testsPass: true,
-      e2ePass: true,
       approved: true,
       threadsResolved: true,
       noActiveReviewFix: true,
@@ -72,14 +68,6 @@ describe('evaluateMergeGate', () => {
 
     expect(result.action).toBe('wait');
     expect(result.failingConditions).toContain('testsPass');
-  });
-
-  it('returns "wait" when e2e fails', async () => {
-    const github = createMockGitHub({ e2ePass: false });
-    const result = await evaluateMergeGate(github, 42);
-
-    expect(result.action).toBe('wait');
-    expect(result.failingConditions).toContain('e2ePass');
   });
 
   it('returns "wait" when no approvals', async () => {

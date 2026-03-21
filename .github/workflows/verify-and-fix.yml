@@ -46,10 +46,10 @@ on:
         type: string
         default: ''
       checks:
-        description: 'Check mode: "all", "ci", "e2e"'
+        description: 'Check mode: "all" or "ci"'
         required: false
         type: string
-        default: 'all'
+        default: 'ci'
       fix_enabled:
         description: 'Enable Claude auto-fix on failure'
         required: false
@@ -128,8 +128,6 @@ jobs:
       - name: Run checks
         id: run-checks
         run: |
-          CHECKS="${{ inputs.checks }}"
-
           # Merge conflict → instant fail
           if [ "${{ steps.merge-master.outputs.conflict }}" = "true" ]; then
             echo "pass=false" >> $GITHUB_OUTPUT
@@ -140,46 +138,14 @@ jobs:
           PASS=true
           SUMMARY=""
 
-          # --- CI checks (typecheck + bundle + test) ---
-          if [ "$CHECKS" = "all" ] || [ "$CHECKS" = "ci" ]; then
-            RESULT=$(npx tsx .github/scripts/lib/cli/verify-checks.ts --lint-only-changed --fail-fast 2>/dev/null) || true
-            CI_PASS=$(echo "$RESULT" | jq -r '.pass')
-            CI_SUMMARY=$(echo "$RESULT" | jq -r '.summary')
+          # --- CI checks (lint + typecheck + test) ---
+          RESULT=$(npx tsx .github/scripts/lib/cli/verify-checks.ts --lint-only-changed --fail-fast 2>/dev/null) || true
+          CI_PASS=$(echo "$RESULT" | jq -r '.pass')
+          CI_SUMMARY=$(echo "$RESULT" | jq -r '.summary')
 
-            if [ "$CI_PASS" != "true" ]; then
-              PASS=false
-              SUMMARY="$CI_SUMMARY"
-            fi
-          fi
-
-          # --- E2E checks ---
-          if [ "$CHECKS" = "all" ] || [ "$CHECKS" = "e2e" ]; then
-            # Only run E2E if CI passed (or not requested)
-            if [ "$PASS" = "true" ] || [ "$CHECKS" = "e2e" ]; then
-              echo "=== Installing Playwright browsers ==="
-              npx playwright install --with-deps chromium firefox 2>&1
-
-              echo "=== Building webpack bundle ==="
-              if ! npx webpack --config webpack.config.js 2>&1 | tee /tmp/webpack_errors.txt; then
-                PASS=false
-                WEBPACK_ERRS=$(tail -20 /tmp/webpack_errors.txt)
-                SUMMARY="${SUMMARY}
-
-          WEBPACK BUILD ERRORS:
-          ${WEBPACK_ERRS}"
-              else
-                echo "=== Running Playwright tests ==="
-                set -o pipefail
-                if ! CI=true npx playwright test 2>&1 | tee /tmp/e2e_errors.txt; then
-                  PASS=false
-                  E2E_ERRS=$(tail -30 /tmp/e2e_errors.txt)
-                  SUMMARY="${SUMMARY}
-
-          E2E TEST ERRORS:
-          ${E2E_ERRS}"
-                fi
-              fi
-            fi
+          if [ "$CI_PASS" != "true" ]; then
+            PASS=false
+            SUMMARY="$CI_SUMMARY"
           fi
 
           echo "pass=$PASS" >> $GITHUB_OUTPUT
@@ -421,26 +387,15 @@ jobs:
           else
             echo "Branch is up to date with master — re-running failed checks"
             # Flaky test case: branch is current but check status is stale
-            CHECKS="${{ inputs.checks }}"
-            WORKFLOWS=()
-            if [ "$CHECKS" = "e2e" ] || [ "$CHECKS" = "all" ]; then
-              WORKFLOWS+=("E2E Smoke Tests")
-            fi
-            if [ "$CHECKS" = "ci" ] || [ "$CHECKS" = "all" ]; then
-              WORKFLOWS+=("Tests")
-            fi
-
             RERAN=false
-            for WF_NAME in "${WORKFLOWS[@]}"; do
-              FAILED_RUN=$(gh run list --repo "${{ github.repository }}" --branch "$BRANCH" \
-                --workflow "$WF_NAME" --status failure --limit 1 \
-                --json databaseId -q '.[0].databaseId' 2>/dev/null || echo "")
+            FAILED_RUN=$(gh run list --repo "${{ github.repository }}" --branch "$BRANCH" \
+              --workflow "Tests" --status failure --limit 1 \
+              --json databaseId -q '.[0].databaseId' 2>/dev/null || echo "")
 
-              if [ -n "$FAILED_RUN" ]; then
-                echo "Re-running failed $WF_NAME run #$FAILED_RUN"
-                gh run rerun "$FAILED_RUN" --repo "${{ github.repository }}" --failed 2>/dev/null && RERAN=true || true
-              fi
-            done
+            if [ -n "$FAILED_RUN" ]; then
+              echo "Re-running failed Tests run #$FAILED_RUN"
+              gh run rerun "$FAILED_RUN" --repo "${{ github.repository }}" --failed 2>/dev/null && RERAN=true || true
+            fi
 
             if [ "$RERAN" = "true" ]; then
               npx tsx .github/scripts/lib/cli/pipeline.ts comment "$PR_NUM" "Verify passed (flaky test). Re-running failed CI to update check statuses."

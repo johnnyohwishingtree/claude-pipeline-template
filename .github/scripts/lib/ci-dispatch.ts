@@ -1,5 +1,5 @@
 /**
- * CI Dispatch — extracts inline shell logic from test.yml and e2e-smoke.yml.
+ * CI Dispatch — extracts inline shell logic from test.yml.
  *
  * Handles:
  * - Checking PR labels (e.g., "no-autofix" opt-out)
@@ -35,7 +35,7 @@ export function hasLabel(pr: number, label: string, repo: string): boolean {
 /**
  * Extract failed job names or step names from a workflow run.
  *
- * mode = 'jobs':  returns failed job names (e2e-smoke pattern)
+ * mode = 'jobs':  returns failed job names
  * mode = 'steps': returns failed step names (test.yml pattern)
  */
 export function getFailedItems(runId: string, mode: 'jobs' | 'steps'): string {
@@ -56,7 +56,6 @@ export interface DispatchPRFixOptions {
   runId: string;
   runUrl: string;
   repo: string;
-  checks: 'ci' | 'e2e';
   /** Extra context appended to fix_context */
   extraContext?: string;
 }
@@ -65,7 +64,7 @@ export interface DispatchPRFixOptions {
  * Dispatch verify-and-fix for a PR failure.
  *
  * 1. Checks for "no-autofix" label (skips if present)
- * 2. Extracts failed jobs/steps from the run
+ * 2. Extracts failed steps from the run
  * 3. Posts a comment on the PR
  * 4. Dispatches verify-and-fix
  */
@@ -77,23 +76,19 @@ export async function dispatchPRFix(
     return { skipped: true, failedItems: '' };
   }
 
-  const itemMode = opts.checks === 'e2e' ? 'jobs' : 'steps';
-  const failedItems = getFailedItems(opts.runId, itemMode);
-  const label = opts.checks === 'e2e' ? 'E2E smoke tests' : 'CI checks';
+  const failedItems = getFailedItems(opts.runId, 'steps');
 
   await github.commentOnIssue(
     opts.pr,
-    `${label} failed (${failedItems}). Dispatching verify-and-fix with auto-retry. [View run](${opts.runUrl})`
+    `CI checks failed (${failedItems}). Dispatching verify-and-fix with auto-retry. [View run](${opts.runUrl})`
   );
 
-  const fixContext = opts.checks === 'e2e'
-    ? `E2E tests failed on PR #${opts.pr}. Failed jobs: ${failedItems}. Run: ${opts.runUrl}.`
-    : `CI failed on PR #${opts.pr}. Failed steps: ${failedItems}. Run: ${opts.runUrl}`;
+  const fixContext = `CI failed on PR #${opts.pr}. Failed steps: ${failedItems}. Run: ${opts.runUrl}`;
 
   await github.dispatchWorkflow('verify-and-fix.yml', 'master', {
     branch: opts.branch,
     issue_number: String(opts.pr),
-    checks: opts.checks,
+    checks: 'ci',
     fix_enabled: 'true',
     max_attempts: '3',
     fix_context: opts.extraContext ? `${fixContext} ${opts.extraContext}` : fixContext,
@@ -106,8 +101,7 @@ export interface DispatchMasterFixOptions {
   runId: string;
   runUrl: string;
   repo: string;
-  checks: 'ci' | 'e2e';
-  /** Branch name prefix, e.g., "fix/master-ci" or "fix/master-e2e" */
+  /** Branch name prefix, e.g., "fix/master-ci" */
   branchPrefix: string;
   /** Extra context appended to fix_context */
   extraContext?: string;
@@ -129,18 +123,16 @@ export async function dispatchMasterFix(
   const timestamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 12);
   const branch = `${opts.branchPrefix}-${timestamp}`;
 
-  const itemMode = opts.checks === 'e2e' ? 'jobs' : 'steps';
-  const failedItems = getFailedItems(opts.runId, itemMode);
+  const failedItems = getFailedItems(opts.runId, 'steps');
 
   exec('git', ['checkout', '-b', branch]);
   exec('git', ['push', '-u', 'origin', branch]);
 
-  const label = opts.checks === 'e2e' ? 'E2E failed' : 'CI failed';
-  const fixContext = `${label} on master after merge. Failed ${itemMode}: ${failedItems}. Run: ${opts.runUrl}.`;
+  const fixContext = `CI failed on master after merge. Failed steps: ${failedItems}. Run: ${opts.runUrl}.`;
 
   await github.dispatchWorkflow('verify-and-fix.yml', 'master', {
     branch,
-    checks: opts.checks,
+    checks: 'ci',
     fix_enabled: 'true',
     max_attempts: '3',
     create_pr: 'true',

@@ -200,41 +200,22 @@ describe('watcher', () => {
   });
 
   describe('getPRCIConclusion', () => {
-    it('returns SUCCESS when both test and test-chromium pass', () => {
+    it('returns SUCCESS when test passes', () => {
       mockExec(JSON.stringify([
         { name: 'test', conclusion: 'SUCCESS' },
-        { name: 'test-chromium', conclusion: 'SUCCESS' },
       ]));
       expect(getPRCIConclusion(42, 'owner/repo')).toBe('SUCCESS');
-    });
-
-    it('returns FAILURE when test-chromium fails (E2E)', () => {
-      mockExec(JSON.stringify([
-        { name: 'test', conclusion: 'SUCCESS' },
-        { name: 'test-chromium', conclusion: 'FAILURE' },
-      ]));
-      expect(getPRCIConclusion(42, 'owner/repo')).toBe('FAILURE');
     });
 
     it('returns FAILURE when test fails', () => {
       mockExec(JSON.stringify([
         { name: 'test', conclusion: 'FAILURE' },
-        { name: 'test-chromium', conclusion: 'SUCCESS' },
       ]));
       expect(getPRCIConclusion(42, 'owner/repo')).toBe('FAILURE');
     });
 
-    it('returns empty string when only test is present (test-chromium not yet started)', () => {
-      mockExec(JSON.stringify([
-        { name: 'test', conclusion: 'SUCCESS' },
-      ]));
-      expect(getPRCIConclusion(42, 'owner/repo')).toBe('');
-    });
-
-    it('returns empty string when only test-chromium is present (test not yet started)', () => {
-      mockExec(JSON.stringify([
-        { name: 'test-chromium', conclusion: 'SUCCESS' },
-      ]));
+    it('returns empty string when no checks found', () => {
+      mockExec(JSON.stringify([]));
       expect(getPRCIConclusion(42, 'owner/repo')).toBe('');
     });
 
@@ -341,26 +322,6 @@ describe('watcher', () => {
     });
   });
 
-  // Bug: getPRCIConclusion only checked the "test" check, ignoring E2E failures.
-  // PRs #488 and #491 had failing E2E but watcher reported CI: SUCCESS.
-  describe('getPRCIConclusion includes E2E checks', () => {
-    it('should check both test and E2E check conclusions', () => {
-      // Read the source to verify it checks more than just "test"
-      const src = require('fs').readFileSync(
-        require('path').join(__dirname, '../../lib/watcher.ts'), 'utf-8'
-      );
-      const fnMatch = src.match(/getPRCIConclusion[\s\S]*?^}/m);
-      expect(fnMatch, 'getPRCIConclusion function not found').toBeTruthy();
-      const fnBody = fnMatch![0];
-
-      // Must check for E2E checks (test-chromium, test-performance, etc), not just "test"
-      expect(
-        fnBody,
-        'getPRCIConclusion must check E2E results, not just the "test" check',
-      ).toMatch(/test-chromium|e2e|E2E|statusCheckRollup.*FAILURE/i);
-    });
-  });
-
   // Bug: watcher handled conflicts by posting @claude comment, which relies
   // on claude.yml triggering (broken). Should dispatch resolve-conflicts.yml.
   describe('checkPR conflict handling', () => {
@@ -381,28 +342,6 @@ describe('watcher', () => {
     });
   });
 
-  // Bug: missing CI handler only dispatched test.yml, not e2e-smoke.yml.
-  // E2E failures were invisible even after retrigger.
-  describe('checkPR missing CI triggers both test and e2e', () => {
-    it('dispatches both test.yml and e2e-smoke.yml when CI is missing', () => {
-      const src = require('fs').readFileSync(
-        require('path').join(__dirname, '../../lib/watcher.ts'), 'utf-8'
-      );
-      const checkPRBody = src.match(/export async function checkPR[\s\S]*?^}/m);
-      expect(checkPRBody).toBeTruthy();
-
-      const missingCISection = checkPRBody![0].match(/Missing CI[\s\S]*?retrigger/);
-      expect(missingCISection).toBeTruthy();
-
-      expect(
-        missingCISection![0],
-        'Missing CI handler must dispatch e2e-smoke.yml too',
-      ).toContain('e2e-smoke.yml');
-    });
-  });
-
-  // Improvement: path-based CI skip — if only .github/ files changed,
-  // E2E tests don't need to run (pipeline changes don't affect the app).
   describe('getPRChangedPaths', () => {
     it('returns list of changed file paths', () => {
       mockExec('.github/workflows/test.yml\n.github/scripts/lib/watcher.ts\n');

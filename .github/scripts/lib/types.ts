@@ -78,7 +78,6 @@ export type ActivityType = keyof typeof ACTIVITY_LIMITS;
 
 export interface CIStatus {
   testsPass: boolean;
-  e2ePass: boolean;
 }
 
 // ─── Merge Gate Conditions ──────────────────────────────────────────────────
@@ -87,7 +86,6 @@ export interface MergeGateResult {
   action: 'merge' | 'update_branch' | 'wait' | 'skip';
   conditions: {
     testsPass: boolean;
-    e2ePass: boolean;
     approved: boolean;
     threadsResolved: boolean;
     noActiveReviewFix: boolean;
@@ -129,7 +127,7 @@ export interface ReviewFeedback {
 
 // ─── Verify Check Modes ─────────────────────────────────────────────────────
 
-export type CheckMode = 'all' | 'ci' | 'e2e';
+export type CheckMode = 'all' | 'ci';
 
 export interface VerifyResult {
   pass: boolean;

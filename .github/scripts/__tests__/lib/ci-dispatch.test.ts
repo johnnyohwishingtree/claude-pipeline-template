@@ -85,9 +85,9 @@ describe('ci-dispatch', () => {
 
   describe('getFailedItems', () => {
     it('returns failed job names in jobs mode', () => {
-      mockExec('test-chromium, test-performance');
+      mockExec('build, deploy');
       const result = getFailedItems('12345', 'jobs');
-      expect(result).toBe('test-chromium, test-performance');
+      expect(result).toBe('build, deploy');
       const calls = getExecCalls();
       const allArgs = calls[0].args.join(' ');
       expect(allArgs).toContain('select(.conclusion == "failure") | .name');
@@ -135,7 +135,6 @@ describe('ci-dispatch', () => {
       runId: '99999',
       runUrl: 'https://github.com/owner/repo/actions/runs/99999',
       repo: 'owner/repo',
-      checks: 'e2e' as const,
     };
 
     beforeEach(() => {
@@ -150,19 +149,19 @@ describe('ci-dispatch', () => {
       expect(mockGitHub.dispatchWorkflow).not.toHaveBeenCalled();
     });
 
-    it('dispatches for e2e failures with job names', async () => {
+    it('dispatches for CI failures with step names', async () => {
       // First call: hasLabel check (no label), Second call: getFailedItems
-      mockExecSequence(['bug,enhancement', 'test-chromium, test-cross-browser']);
+      mockExecSequence(['bug,enhancement', 'Type check, Run tests']);
 
       const result = await dispatchPRFix(mockGitHub as any, baseOpts);
 
       expect(result.skipped).toBe(false);
-      expect(result.failedItems).toBe('test-chromium, test-cross-browser');
+      expect(result.failedItems).toBe('Type check, Run tests');
 
       // Verify comment
       expect(mockGitHub.commentOnIssue).toHaveBeenCalledWith(
         42,
-        expect.stringContaining('E2E smoke tests failed (test-chromium, test-cross-browser)')
+        expect.stringContaining('CI checks failed (Type check, Run tests)')
       );
 
       // Verify dispatch
@@ -172,44 +171,26 @@ describe('ci-dispatch', () => {
         expect.objectContaining({
           branch: 'feat/my-feature',
           issue_number: '42',
-          checks: 'e2e',
+          checks: 'ci',
           fix_enabled: 'true',
           max_attempts: '3',
         })
       );
     });
 
-    it('dispatches for ci failures with step names', async () => {
-      mockExecSequence(['', 'Type check, Run tests']);
-
-      const ciOpts = { ...baseOpts, checks: 'ci' as const };
-      const result = await dispatchPRFix(mockGitHub as any, ciOpts);
-
-      expect(result.failedItems).toBe('Type check, Run tests');
-      expect(mockGitHub.commentOnIssue).toHaveBeenCalledWith(
-        42,
-        expect.stringContaining('CI checks failed (Type check, Run tests)')
-      );
-      expect(mockGitHub.dispatchWorkflow).toHaveBeenCalledWith(
-        'verify-and-fix.yml',
-        'master',
-        expect.objectContaining({ checks: 'ci' })
-      );
-    });
-
     it('includes extra context when provided', async () => {
-      mockExecSequence(['', 'test-chromium']);
+      mockExecSequence(['', 'Type check']);
 
       await dispatchPRFix(mockGitHub as any, {
         ...baseOpts,
-        extraContext: 'Check webpack aliases.',
+        extraContext: 'Check the config.',
       });
 
       expect(mockGitHub.dispatchWorkflow).toHaveBeenCalledWith(
         'verify-and-fix.yml',
         'master',
         expect.objectContaining({
-          fix_context: expect.stringContaining('Check webpack aliases.'),
+          fix_context: expect.stringContaining('Check the config.'),
         })
       );
     });
@@ -224,8 +205,7 @@ describe('ci-dispatch', () => {
       runId: '88888',
       runUrl: 'https://github.com/owner/repo/actions/runs/88888',
       repo: 'owner/repo',
-      checks: 'e2e' as const,
-      branchPrefix: 'fix/master-e2e',
+      branchPrefix: 'fix/master-ci',
     };
 
     beforeEach(() => {
@@ -234,12 +214,12 @@ describe('ci-dispatch', () => {
 
     it('creates branch, pushes, and dispatches', async () => {
       // getFailedItems call, then git checkout, git push
-      mockExecSequence(['test-chromium', '', '']);
+      mockExecSequence(['Type check', '', '']);
 
       const result = await dispatchMasterFix(mockGitHub as any, baseOpts);
 
-      expect(result.branch).toMatch(/^fix\/master-e2e-\d{12}$/);
-      expect(result.failedItems).toBe('test-chromium');
+      expect(result.branch).toMatch(/^fix\/master-ci-\d{12}$/);
+      expect(result.failedItems).toBe('Type check');
 
       const calls = getExecCalls();
       expect(calls.some((c) => c.cmd === 'git' && c.args.includes('checkout'))).toBe(true);
@@ -250,34 +230,15 @@ describe('ci-dispatch', () => {
         'master',
         expect.objectContaining({
           branch: result.branch,
-          checks: 'e2e',
+          checks: 'ci',
           create_pr: 'true',
-          fix_context: expect.stringContaining('E2E failed on master'),
-        })
-      );
-    });
-
-    it('dispatches ci failures with step-level detail', async () => {
-      mockExecSequence(['Type check', '', '']);
-
-      const result = await dispatchMasterFix(mockGitHub as any, {
-        ...baseOpts,
-        checks: 'ci',
-        branchPrefix: 'fix/master-ci',
-      });
-
-      expect(result.branch).toMatch(/^fix\/master-ci-/);
-      expect(mockGitHub.dispatchWorkflow).toHaveBeenCalledWith(
-        'verify-and-fix.yml',
-        'master',
-        expect.objectContaining({
           fix_context: expect.stringContaining('CI failed on master'),
         })
       );
     });
 
     it('includes extra context when provided', async () => {
-      mockExecSequence(['test-chromium', '', '']);
+      mockExecSequence(['Type check', '', '']);
 
       await dispatchMasterFix(mockGitHub as any, {
         ...baseOpts,

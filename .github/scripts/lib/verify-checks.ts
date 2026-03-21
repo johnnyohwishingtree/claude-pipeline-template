@@ -1,7 +1,7 @@
 /**
  * Verification checks — TypeScript port of verify-checks.sh.
  *
- * Runs lint, typecheck, bundle, unit tests, and native dependency checks.
+ * Runs lint, typecheck, and unit tests.
  * Returns structured JSON output.
  */
 
@@ -17,9 +17,7 @@ export interface VerifyChecksOutput {
   checks: {
     lint: CheckResult;
     typecheck: CheckResult;
-    bundle: CheckResult;
     test: CheckResult;
-    native_deps: CheckResult;
   };
   summary: string;
 }
@@ -27,7 +25,6 @@ export interface VerifyChecksOutput {
 export interface VerifyChecksOptions {
   lintOnlyChanged?: boolean;
   failFast?: boolean;
-  skipNative?: boolean;
 }
 
 function runCmd(cmd: string): { stdout: string; success: boolean } {
@@ -50,9 +47,7 @@ export function runVerifyChecks(opts: VerifyChecksOptions = {}): VerifyChecksOut
   const checks: VerifyChecksOutput['checks'] = {
     lint: { pass: true, errors: '' },
     typecheck: { pass: true, errors: '' },
-    bundle: { pass: true, errors: '' },
     test: { pass: true, errors: '' },
-    native_deps: { pass: true, errors: '' },
   };
 
   function recordFailure(check: keyof typeof checks, errors: string, label: string): void {
@@ -112,13 +107,6 @@ export function runVerifyChecks(opts: VerifyChecksOptions = {}): VerifyChecksOut
     }
   }
 
-  // === Bundle Check ===
-  progress('=== Bundle Check ===');
-  if (!shouldSkip()) {
-    // Override this section for framework-specific bundle checks (e.g., metro, webpack, vite)
-    progress('Bundle check passed (no-op — override for your framework)');
-  }
-
   // === Tests ===
   progress('=== Tests ===');
   if (!shouldSkip()) {
@@ -132,13 +120,6 @@ export function runVerifyChecks(opts: VerifyChecksOptions = {}): VerifyChecksOut
     } else {
       progress('Tests passed');
     }
-  }
-
-  // === Native Dependency Check ===
-  progress('=== Native Dependency Check ===');
-  if (!opts.skipNative && !shouldSkip()) {
-    // Override this section for platform-specific dependency checks
-    progress('Native dependency check passed (no-op — override for your platform)');
   }
 
   return { pass: overallPass, checks, summary: summary.trim() };

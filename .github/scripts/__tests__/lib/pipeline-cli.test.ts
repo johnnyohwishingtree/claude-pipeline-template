@@ -9,7 +9,7 @@ vi.mock('../../lib/github.js', () => {
     countApprovals: vi.fn().mockResolvedValue(2),
     countUnresolvedThreads: vi.fn().mockResolvedValue(3),
     resolveAllThreads: vi.fn().mockResolvedValue(5),
-    checkCIStatus: vi.fn().mockResolvedValue({ testsPass: true, e2ePass: false }),
+    checkCIStatus: vi.fn().mockResolvedValue({ testsPass: true }),
     isWorkflowActive: vi.fn().mockResolvedValue(true),
     countCriticalComments: vi.fn().mockResolvedValue(1),
     getNextPendingStory: vi.fn().mockResolvedValue(42),
@@ -222,11 +222,11 @@ describe('pipeline CLI', () => {
   });
 
   describe('check-ci-status output format', () => {
-    it('outputs eval-able TESTS_PASS and E2E_PASS lines', () => {
-      const status = { testsPass: true, e2ePass: false };
-      const output = `TESTS_PASS=${status.testsPass}\nE2E_PASS=${status.e2ePass}`;
+    it('outputs eval-able TESTS_PASS line', () => {
+      const status = { testsPass: true };
+      const output = `TESTS_PASS=${status.testsPass}`;
 
-      expect(output).toBe('TESTS_PASS=true\nE2E_PASS=false');
+      expect(output).toBe('TESTS_PASS=true');
     });
   });
 

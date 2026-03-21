@@ -3,7 +3,7 @@ name: Review Guardian
 on:
   # Trigger when CI workflows complete on a PR
   workflow_run:
-    workflows: ["Tests", "E2E Smoke Tests"]
+    workflows: ["Tests"]
     types: [completed]
 
   # Trigger when Gemini posts a failure comment

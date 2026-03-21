@@ -208,15 +208,14 @@ This ensures only verified code lands on the PR branch.
 | `pipeline-toggle.yml` | Manual | Enable/disable the autonomous pipeline |
 | `agent-switcher.yml` | Manual / comment | Switch between Claude and Gemini agents |
 
-## Auto-Merge Gate (6 Conditions)
+## Auto-Merge Gate (5 Conditions)
 
 PRs merge only when ALL conditions are met:
 1. Tests workflow passed
-2. E2E passed (if configured)
-3. PR has at least one approval (owner PRs implicitly approved)
-4. No unresolved review threads
-5. No active review-fix runs
-6. Branch up to date with master
+2. PR has at least one approval (owner PRs implicitly approved)
+3. No unresolved review threads
+4. No active review-fix runs
+5. Branch up to date with master
 
 ## Safety Mechanisms
 
@@ -266,15 +265,9 @@ Update test/lint commands in:
 - `.github/scripts/lib/verify-checks.ts` — the TypeScript check runner
 - `.github/scripts/lib/cli/verify-checks.ts` — CLI wrapper
 
-### Adding E2E tests
+### Adding custom checks
 
-Create your own `e2e-smoke.yml` workflow following the pattern in `test.yml`. The `verify-and-fix.yml` already supports `checks: "e2e"` and `checks: "all"` modes — you just need a workflow that dispatches `ci-dispatch-pr`/`ci-dispatch-master` on failure.
-
-### Adding framework-specific checks
-
-Edit `.github/scripts/lib/verify-checks.ts`:
-- The `bundle` check is a no-op by default — add your bundler (metro, webpack, vite, etc.)
-- The `native_deps` check is a no-op by default — add platform-specific dependency checks
+Edit `.github/scripts/lib/verify-checks.ts` to add project-specific checks (bundler, E2E, etc.).
 
 ### Changing the planner schedule
 

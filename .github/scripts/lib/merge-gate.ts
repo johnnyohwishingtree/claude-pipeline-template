@@ -1,7 +1,7 @@
 /**
  * Merge gate evaluator — TypeScript port of evaluate-merge-gate.sh.
  *
- * Evaluates 6 merge conditions and returns an action:
+ * Evaluates 5 merge conditions and returns an action:
  * - All pass + up to date → merge (squash)
  * - All pass + behind → update branch
  * - Any fail → wait (re-evaluated on next event)
@@ -53,7 +53,6 @@ export async function evaluateMergeGate(
 
   const conditions = {
     testsPass: ci.testsPass,
-    e2ePass: ci.e2ePass,
     approved,
     threadsResolved,
     noActiveReviewFix,
