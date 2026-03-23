@@ -68,9 +68,16 @@ export async function evaluateMergeGate(
     failingConditions.length === 1 &&
     failingConditions[0] === 'branchUpToDate';
 
+  // Check if the PR has merge conflicts. GitHub's update-branch API silently
+  // fails on content conflicts, so we need to dispatch resolve-conflicts instead.
+  const mergeable = (pr as any).mergeable_state ?? (pr as any).mergeable;
+  const hasConflicts = mergeable === 'dirty' || mergeable === 'CONFLICTING' || mergeable === false;
+
   let action: MergeGateResult['action'];
   if (allConditionsMet) {
     action = 'merge';
+  } else if (hasConflicts) {
+    action = 'resolve_conflicts';
   } else if (allExceptBranch) {
     action = 'update_branch';
   } else {

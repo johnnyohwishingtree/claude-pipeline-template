@@ -9,6 +9,7 @@ function createMockGitHub(
     unresolvedThreads: number;
     reviewFixActive: boolean;
     branchStatus: 'ahead' | 'behind' | 'diverged' | 'identical';
+    mergeableState: string;
   }> = {}
 ): GitHubClient {
   const defaults = {
@@ -17,6 +18,7 @@ function createMockGitHub(
     unresolvedThreads: 0,
     reviewFixActive: false,
     branchStatus: 'ahead' as const,
+    mergeableState: 'clean',
   };
   const config = { ...defaults, ...overrides };
 
@@ -25,6 +27,7 @@ function createMockGitHub(
     getPR: vi.fn().mockResolvedValue({
       head: { sha: 'abc123', ref: 'claude/issue-42' },
       user: { login: 'bot-user' },
+      mergeable_state: config.mergeableState,
     }),
     checkCIStatus: vi.fn().mockResolvedValue({
       testsPass: config.testsPass,
@@ -121,6 +124,32 @@ describe('evaluateMergeGate', () => {
 
     expect(result.action).toBe('update_branch');
     expect(result.failingConditions).toEqual(['branchUpToDate']);
+  });
+
+  it('returns "resolve_conflicts" when branch is behind and has merge conflicts', async () => {
+    const github = createMockGitHub({ branchStatus: 'behind', mergeableState: 'dirty' });
+    const result = await evaluateMergeGate(github, 42);
+
+    expect(result.action).toBe('resolve_conflicts');
+  });
+
+  it('returns "resolve_conflicts" when conditions fail and PR has conflicts', async () => {
+    const github = createMockGitHub({
+      testsPass: false,
+      branchStatus: 'diverged',
+      mergeableState: 'dirty',
+    });
+    const result = await evaluateMergeGate(github, 42);
+
+    // Conflicts take priority over wait — resolve them first
+    expect(result.action).toBe('resolve_conflicts');
+  });
+
+  it('returns "update_branch" when behind but no conflicts', async () => {
+    const github = createMockGitHub({ branchStatus: 'behind', mergeableState: 'clean' });
+    const result = await evaluateMergeGate(github, 42);
+
+    expect(result.action).toBe('update_branch');
   });
 
   it('returns "merge" when PR author is repo owner and no formal approval exists', async () => {

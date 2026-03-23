@@ -116,6 +116,11 @@ jobs:
             echo "Branch is behind master — updating and dispatching CI"
             npx tsx .github/scripts/lib/cli/pipeline.ts update-branch "$PR_NUM"
 
+          elif [ "$ACTION" = "resolve_conflicts" ]; then
+            echo "Branch has merge conflicts — dispatching resolve-conflicts.yml"
+            npx tsx .github/scripts/lib/cli/pipeline.ts dispatch "resolve-conflicts.yml" \
+              -f pr_number="$PR_NUM"
+
           elif [ "$ACTION" = "skip" ]; then
             echo "PR does not target master — skipping"
 

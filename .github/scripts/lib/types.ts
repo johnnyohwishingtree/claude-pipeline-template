@@ -83,7 +83,7 @@ export interface CIStatus {
 // ─── Merge Gate Conditions ──────────────────────────────────────────────────
 
 export interface MergeGateResult {
-  action: 'merge' | 'update_branch' | 'wait' | 'skip';
+  action: 'merge' | 'update_branch' | 'resolve_conflicts' | 'wait' | 'skip';
   conditions: {
     testsPass: boolean;
     approved: boolean;
