@@ -1,9 +1,0 @@
-{
-  "name": "my-project",
-  "version": "0.1.0",
-  "private": true,
-  "scripts": {
-    "typecheck": "echo 'TODO: Add typecheck command (e.g., tsc --noEmit)'",
-    "test": "echo 'TODO: Add test command (e.g., jest, vitest, pytest)'"
-  }
-}
