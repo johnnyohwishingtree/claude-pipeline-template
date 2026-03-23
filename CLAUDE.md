@@ -23,11 +23,12 @@ pnpm test          # Run tests
 
 ## Rules
 
-Rules in `.claude/rules/` are auto-loaded into every Claude session. See `.claude/rules/README.md` for how rules, templates, patterns, and rubrics relate.
+Rules in `.claude/rules/` are auto-loaded into every Claude session. See `.claude/index.md` for the full system map (rules, templates, patterns, rubrics, skills).
 
 - `tdd.md` — Write a failing test before fixing any bug
 - `commit-gate.md` — Run typecheck + tests before every commit
 - `file-conventions.md` — Project structure, naming, and the `.claude/` directory layout
+- `update-index.md` — Update `.claude/index.md` when adding/removing `.claude/` files
 
 ## Architecture Decisions
 
