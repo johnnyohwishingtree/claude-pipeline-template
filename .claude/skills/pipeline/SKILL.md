@@ -218,6 +218,6 @@ The next pipeline run will pick up the first new story.
 
 ## Template Maintenance
 
-<!-- canductor:skill-template-version:1 -->
+<!-- pipeline:skill-template-version:1 -->
 <!-- Last updated: 2026-03-23 -->
 <!-- Update this skill when: new verification commands, new label conventions, or the pipeline loop changes -->
