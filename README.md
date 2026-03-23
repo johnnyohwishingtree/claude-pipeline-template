@@ -17,19 +17,24 @@ The entire loop — planning, coding, testing, reviewing, merging — runs auton
 .claude/
 ├── skills/
 │   └── pipeline/SKILL.md    # The autonomous pipeline loop
-├── templates/                # Structure templates for artifacts
+├── rules/                    # Always-on constraints (auto-loaded every session)
+│   ├── README.md             # How rules/templates/patterns/rubrics relate
+│   ├── tdd.md                # Write failing test before fixing bugs
+│   ├── commit-gate.md        # Run checks before every commit
+│   └── file-conventions.md   # Project structure and naming conventions
+├── templates/                # Single-file structure definitions (read on demand)
 │   ├── epic.md               # Epic issue structure
 │   ├── story.md              # Story issue structure (with Context/Patterns/Key Types)
 │   ├── skill.md              # Skill file structure
 │   ├── module.md             # Source module structure
 │   ├── test.md               # Test file structure
 │   └── rubric.md             # Quality rubric structure
-├── rubrics/                  # Quality evaluation criteria
+├── rubrics/                  # Quality evaluation criteria (read on demand)
 │   ├── code-quality.md       # Architecture, testing, style, error handling
 │   ├── test-quality.md       # Coverage, assertions, isolation, clarity
 │   └── skill-quality.md      # Clarity, completeness, self-awareness, efficiency
-└── patterns/
-    └── README.md             # Guide for creating multi-file change recipes
+└── patterns/                 # Multi-file change recipes (read on demand)
+    └── README.md             # Guide + diagram showing how everything connects
 CLAUDE.md                     # Project context (customize this)
 ```
 

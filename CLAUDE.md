@@ -23,11 +23,11 @@ pnpm test          # Run tests
 
 ## Rules
 
-- Run `pnpm typecheck` after every file change
-- Run `pnpm test` before committing
-- Never use `any` types — fix the root cause
-- Never use `git add -A` — add specific files
-- Every new module needs tests
+Rules in `.claude/rules/` are auto-loaded into every Claude session. See `.claude/rules/README.md` for how rules, templates, patterns, and rubrics relate.
+
+- `tdd.md` — Write a failing test before fixing any bug
+- `commit-gate.md` — Run typecheck + tests before every commit
+- `file-conventions.md` — Project structure, naming, and the `.claude/` directory layout
 
 ## Architecture Decisions
 
