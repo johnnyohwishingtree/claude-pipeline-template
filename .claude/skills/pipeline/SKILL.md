@@ -33,7 +33,9 @@ git checkout master && git pull origin master
 gh issue list --repo $REPO --label "story" --label "pending" --state open --json number,title --jq '.[0]'
 ```
 
-If no pending stories → skip to **Step 7**.
+If no pending stories → skip to **Step 8**.
+
+**Important:** Only pick up stories labeled `pending`. Never pick up `in-progress` stories — another pipeline session owns them. If all stories are `in-progress` or `blocked`, treat it the same as "no pending stories" and skip to Step 8.
 
 ## Step 3: Implement
 
