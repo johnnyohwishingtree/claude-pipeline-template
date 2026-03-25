@@ -17,3 +17,9 @@ When source code changes, derived artifacts must stay in sync. Drift happens whe
 ## How to prevent
 - Story acceptance criteria should include: "all references updated"
 - /audit skill checks for common drift patterns
+
+## Anti-patterns
+- **Renaming a file without grepping for references** — old paths in `.md`, `.yaml`, and import statements silently break
+- **Updating a CLI command without updating README** — users copy-paste stale commands
+- **Changing exports without checking consumers** — dead imports cause runtime errors, not compile errors
+- **Trusting CI will catch drift** — most drift is in docs and config, which CI doesn't check

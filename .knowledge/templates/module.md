@@ -35,6 +35,12 @@ export function doSomething(paramName: ParamType): ReturnType {
 - No side effects at module level
 - Errors thrown with descriptive messages
 
+## Anti-patterns
+- **Multiple concerns per file** — if a module has "and" in its description, split it
+- **Positional function arguments** (`doThing(true, false, 3)`) — use an options object
+- **Default exports** — named exports are greppable and refactor-friendly
+- **Importing from deep internal paths** — import from barrel `index.ts` files
+
 ## Matching test
 
 Every module must have a corresponding test file. See `.knowledge/templates/test.md`.

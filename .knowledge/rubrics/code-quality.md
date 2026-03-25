@@ -1,6 +1,6 @@
 # Code Quality Rubric
 
-Evaluate source modules (following `.claude/templates/module.md`) against these criteria.
+Evaluate source modules (following `.knowledge/templates/module.md`) against these criteria.
 
 ## Architecture (weight: 35%)
 - Functions are small and single-purpose
@@ -25,3 +25,11 @@ Evaluate source modules (following `.claude/templates/module.md`) against these 
 - Functions that can fail throw descriptive errors or return result types
 - External input is validated at boundaries
 - No silent catch blocks that swallow errors
+
+## Anti-patterns
+- **`any` types** — always a sign of skipped work; find the real type
+- **Circular imports** (A imports B imports A) — always a dependency direction violation
+- **Side effects at module level** (top-level `fetch()`, file writes) — wrap in functions
+- **500+ line files** — split into focused modules with barrel exports
+- **Unused exports** — dead code that misleads readers; delete it
+- **`console.log` for error handling** — throw or return a result type instead

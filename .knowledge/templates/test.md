@@ -50,3 +50,9 @@ describe('<functionUnderTest>', () => {
 - No snapshot files — use inline assertions
 - Test names describe behavior, not implementation
 - Assert specific values, not just existence
+
+## Anti-patterns
+- **Testing implementation** (`expect(mock).toHaveBeenCalledTimes(3)` as the only assertion) — test outputs and behavior
+- **Copy-pasting test data inline** — use a factory function (`makeTestData()`)
+- **One giant `it()` block** — split into focused assertions, one logical check per `it()`
+- **No error path tests** — if a function can fail, test that it fails correctly

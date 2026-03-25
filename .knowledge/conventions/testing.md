@@ -17,3 +17,12 @@ Project-specific testing rules. These supplement the universal test template.
 - Every exported function has tests
 - Happy path + at least one error path per function
 - Edge cases when applicable (empty input, boundary values)
+
+## Anti-patterns
+- **`toMatchSnapshot()`** — creates `.snap` files that fail in CI; use `toMatchInlineSnapshot()` or explicit assertions
+- **Testing implementation details** — test behavior and outputs, not internal method calls
+- **Tests that depend on execution order** — each test must be independently runnable
+- **Mocking everything** — only mock what you must (filesystem, network); test real logic
+- **Asserting `toBeDefined()`** — assert specific values (`toBe(100)`, `toContain('error')`)
+- **Slow unit tests** — keep under 1 second; slow tests belong in E2E
+- **Re-running CI to verify a fix** — write a unit test first, get instant feedback
