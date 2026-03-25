@@ -5,7 +5,7 @@ Evaluate source modules (following `.knowledge/templates/module.md`) against the
 ## Architecture (weight: 35%)
 - Functions are small and single-purpose
 - Dependencies flow in one direction (no circular imports)
-- Types are precise (no `any`, no loose unions)
+- Types are precise — avoid untyped or loosely-typed parameters
 - Errors are handled explicitly, not swallowed
 - No side effects at module level
 
@@ -16,9 +16,10 @@ Evaluate source modules (following `.knowledge/templates/module.md`) against the
 - No snapshot files (use inline assertions)
 
 ## Code Style (weight: 20%)
-- TypeScript strict mode passes
+<!-- CUSTOMIZE: Replace with your language's conventions -->
+- Type checker / linter passes with zero errors
 - No unused imports or variables
-- Consistent naming: camelCase for functions, PascalCase for types
+- Consistent naming conventions
 - Comments explain WHY, not WHAT
 
 ## Error Handling (weight: 15%)
@@ -27,9 +28,9 @@ Evaluate source modules (following `.knowledge/templates/module.md`) against the
 - No silent catch blocks that swallow errors
 
 ## Anti-patterns
-- **`any` types** — always a sign of skipped work; find the real type
+- **Untyped parameters** — find the real type, don't bypass the type system
 - **Circular imports** (A imports B imports A) — always a dependency direction violation
-- **Side effects at module level** (top-level `fetch()`, file writes) — wrap in functions
-- **500+ line files** — split into focused modules with barrel exports
+- **Side effects at module level** (top-level network calls, file writes) — wrap in functions
+- **500+ line files** — split into focused modules
 - **Unused exports** — dead code that misleads readers; delete it
-- **`console.log` for error handling** — throw or return a result type instead
+- **Logging for error handling** — throw or return a result type instead

@@ -1,20 +1,18 @@
 # Module Template
 
-New source modules follow this structure. Customize import patterns for your project's stack.
+New source modules follow this structure. Customize for your project's language and stack.
 
 **Matching rubric:** `.knowledge/rubrics/code-quality.md`
 
 ## Structure
 
-```typescript
+<!-- CUSTOMIZE: Replace with your language's conventions -->
+```
 /**
  * <Module name> — <one-line purpose>
  */
 
-import { <named imports> } from 'node:<builtin>';     // Node builtins first
-import { <named imports> } from '<dependency>';        // External deps second
-import { <named imports> } from './<sibling>';         // Local imports last
-import type { <type imports> } from './types';         // Type-only imports separate
+// Imports: stdlib first, external deps second, local imports last
 
 /**
  * <What this function does.>
@@ -22,7 +20,7 @@ import type { <type imports> } from './types';         // Type-only imports sepa
  * @param paramName - <what it is>
  * @returns <what the caller gets back>
  */
-export function doSomething(paramName: ParamType): ReturnType {
+export function doSomething(paramName, options) {
   // Implementation
 }
 ```
@@ -30,16 +28,15 @@ export function doSomething(paramName: ParamType): ReturnType {
 ## Rules
 
 - One concern per module
-- No `any` types — explicit parameter and return types
-- JSDoc on every export
+- Explicit parameter and return types
+- Document every export
 - No side effects at module level
 - Errors thrown with descriptive messages
 
 ## Anti-patterns
 - **Multiple concerns per file** — if a module has "and" in its description, split it
-- **Positional function arguments** (`doThing(true, false, 3)`) — use an options object
-- **Default exports** — named exports are greppable and refactor-friendly
-- **Importing from deep internal paths** — import from barrel `index.ts` files
+- **Positional function arguments** (`doThing(true, false, 3)`) — use an options object or named parameters
+- **Importing from deep internal paths** — import from the module's public API
 
 ## Matching test
 

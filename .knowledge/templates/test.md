@@ -1,21 +1,22 @@
 # Test Template
 
-Test files follow this structure. Customize the test framework imports for your stack (vitest, jest, etc.).
+Test files follow this structure. Customize the test framework and syntax for your stack.
 
 **Matching rubric:** `.knowledge/rubrics/test-quality.md`
 
 ## Structure
 
-```typescript
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'; // or jest
-import { functionUnderTest } from '../src/<module>';
+<!-- CUSTOMIZE: Replace with your language/framework conventions -->
+```
+// Import test framework
+// Import module under test
 
 // ---------------------------------------------------------------------------
 // Test fixtures
 // ---------------------------------------------------------------------------
 
-/** Factory for test data — keeps individual tests focused on the scenario. */
-function makeTestData(overrides?: Partial<RelevantType>): RelevantType {
+// Factory for test data — keeps individual tests focused on the scenario.
+function makeTestData(overrides) {
   return { field: 'default', ...overrides };
 }
 
@@ -42,17 +43,17 @@ describe('<functionUnderTest>', () => {
 
 ## Rules
 
-- File naming mirrors source: `src/foo.ts` → `__tests__/foo.test.ts`
+<!-- CUSTOMIZE: Replace file extension and path conventions -->
+- File naming mirrors source: `src/foo` → `tests/foo.test`
 - One `describe` per exported function
 - Happy path first, then error path, then edge cases
 - Use factory functions for repeated test data
-- Temp directories for filesystem tests (create in `beforeEach`, remove in `afterEach`)
 - No snapshot files — use inline assertions
 - Test names describe behavior, not implementation
 - Assert specific values, not just existence
 
 ## Anti-patterns
-- **Testing implementation** (`expect(mock).toHaveBeenCalledTimes(3)` as the only assertion) — test outputs and behavior
-- **Copy-pasting test data inline** — use a factory function (`makeTestData()`)
-- **One giant `it()` block** — split into focused assertions, one logical check per `it()`
+- **Testing implementation** (asserting mock call counts as the only check) — test outputs and behavior
+- **Copy-pasting test data inline** — use a factory function
+- **One giant test block** — split into focused assertions, one logical check per test
 - **No error path tests** — if a function can fail, test that it fails correctly

@@ -18,7 +18,7 @@ Read .claude/skills/audit/SKILL.md and follow every step.
 
 For each folder CLAUDE.md file, read it and all its `See:` linked `.knowledge/` files. Then check whether the code in that folder actually follows the stated rules.
 
-For example, if a folder CLAUDE.md says "never import X directly," grep the folder's source files for those imports. If it says "all files exported from index.ts," compare directory contents to barrel exports.
+For example, if a folder CLAUDE.md says "never import X directly," grep the folder's source files for those imports. If it says "all exports go through the public API," compare directory contents to what's exported.
 
 Add more checks as new folder CLAUDE.md files are created — read the rules, then verify them.
 
@@ -70,13 +70,13 @@ Write all findings to `.knowledge/gaps.md`. Each entry includes: what's wrong, w
 Findings from audits and pipeline runs. Fix stories resolve these and remove the entry.
 
 ## Code fixes
-- `src/path/to/file.ts` violates <rule> — <what should change> (audit-YYYY-MM-DD)
+- `src/path/to/file` violates <rule> — <what should change> (audit-YYYY-MM-DD)
 
 ## Knowledge updates
 - `.knowledge/conventions/foo.md` says X but codebase does Y everywhere — update convention (audit-YYYY-MM-DD)
 
 ## Drift
-- Reference to `path/that/moved.ts` in `.knowledge/foo.md` — update path (audit-YYYY-MM-DD)
+- Reference to `path/that/moved` in `.knowledge/foo.md` — update path (audit-YYYY-MM-DD)
 ```
 
 If `gaps.md` already exists, **merge** new findings — don't duplicate entries that are already there.

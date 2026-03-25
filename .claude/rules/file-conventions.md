@@ -8,8 +8,7 @@ Platform directory. Auto-loaded by Claude Code. The pipeline reads these but nev
 .claude/
 ├── skills/        # Autonomous workflows (pipeline, audit, optimize)
 ├── rules/         # Always-on constraints (this directory)
-├── settings.json  # Permissions
-└── index.md       # System manifest
+└── settings.json  # Permissions
 ```
 
 ## The `.knowledge/` directory (read-write)
@@ -18,15 +17,16 @@ Project knowledge graph. The pipeline creates and updates these files freely.
 
 ```
 .knowledge/
-├── concepts/      # Cross-cutting principles (drift detection, error handling)
-├── conventions/   # Project-specific rules (testing, styling, storage)
+├── index.md       # System manifest — kept in sync by /audit
+├── concepts/      # Cross-cutting principles
+├── conventions/   # Project-specific rules
 ├── domain/        # Business logic knowledge
 ├── templates/     # File structure definitions
 ├── patterns/      # Multi-file change recipes
 └── rubrics/       # Quality evaluation criteria
 ```
 
-Any `.knowledge/` file can have a `## Known gaps` section. The pipeline adds gaps during Step 5. The /optimize skill resolves them.
+Gaps found by /audit or /pipeline are written to `.knowledge/gaps.md`. Fix stories remove entries when resolved.
 
 ## Source file conventions
 
@@ -34,12 +34,10 @@ Any `.knowledge/` file can have a `## Known gaps` section. The pipeline adds gap
 
 - **One concern per file.** If two exported functions don't share private state, they belong in separate files.
 - **Colocate tests with source.** Tests mirror the source tree.
-- **Barrel exports.** Every directory with multiple modules gets an `index.ts`.
-- **Keep files under 500 lines.** Split into subdirectory with barrel if exceeded.
+- **Keep files under 500 lines.** Split into subdirectory if exceeded.
 
 ## Naming conventions
 
-- `camelCase` for functions and variables
-- `PascalCase` for types, interfaces, classes, components
-- `kebab-case` for file names
-- `UPPER_SNAKE_CASE` for constants
+<!-- CUSTOMIZE: Replace with your language's conventions -->
+- Consistent casing for functions, types, files, and constants
+- Follow the conventions of your language and framework

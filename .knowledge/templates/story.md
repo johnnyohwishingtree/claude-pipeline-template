@@ -9,7 +9,7 @@
 - [ ] <Observable outcome>
 - [ ] <Another observable outcome>
 - [ ] All new functions have tests (happy path + at least one error path)
-- [ ] Verification passes (typecheck + tests)
+- [ ] Verification passes
 
 ## Tasks
 
@@ -30,12 +30,12 @@ Which `.knowledge/` knowledge files are relevant to this story:
 
 ## Context (read before implementing)
 
-- `<path/to/file.ts>` — <why>
-- `<path/to/file.ts:N-M>` — <why>
+- `<path/to/file>` — <why>
+- `<path/to/file:N-M>` — <why>
 
 ## Key Types
 
-```typescript
+```
 // Only the types relevant to this story
 ```
 
