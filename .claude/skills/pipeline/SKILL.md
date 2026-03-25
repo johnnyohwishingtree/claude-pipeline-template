@@ -81,9 +81,14 @@ After verify passes, reflect on each task you implemented:
 4. **Did you encounter domain knowledge the pipeline should know?**
    → Create or update `.knowledge/domain/<name>.md`
 
-If nothing was missing — do nothing. No gaps = templates are working well.
+5. **Did you discover a convention specific to a directory you worked in?**
+   → Check if that directory has a `CLAUDE.md` already
+   → If not, create one following `.knowledge/templates/folder-claude-md.md` — max 5 lines, just pointers to `.knowledge/` files
+   → If yes but it's missing a relevant link, add the "See:" line
 
-Include modified `.knowledge/` files in your commit.
+If nothing was missing — do nothing. No gaps = knowledge graph is working well.
+
+Include modified `.knowledge/` files and any new folder `CLAUDE.md` files in your commit.
 
 ## Step 6: Push, PR, merge
 

@@ -24,3 +24,11 @@ Read this first. Maps every artifact in the pipeline system.
 | `rubrics/` | Quality evaluation criteria | During self-review |
 
 All `.knowledge/` files can have `## Known gaps` sections. The pipeline adds gaps during Step 5 (learn). The /optimize skill resolves them.
+
+## Folder-level CLAUDE.md files (created by pipeline)
+
+Short pointer files (max 5 lines) placed in source directories when directory-specific conventions are discovered. Auto-loaded by Claude Code when working in that directory.
+
+Template: `.knowledge/templates/folder-claude-md.md`
+
+These point to `.knowledge/` files — they don't contain the knowledge themselves.

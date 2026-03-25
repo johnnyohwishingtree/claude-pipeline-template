@@ -34,6 +34,10 @@ Run each check below. For every issue found, note the category and finding.
 - README commands that don't match CLI help
 - Config references to files that don't exist
 
+### Folder CLAUDE.md health
+- "See:" links pointing to `.knowledge/` files that don't exist
+- Folder CLAUDE.md files over 5 lines (content should be in `.knowledge/`)
+
 ## Step 2: Add findings to knowledge graph
 
 For each finding, add a gap entry to the relevant `.knowledge/` file:
