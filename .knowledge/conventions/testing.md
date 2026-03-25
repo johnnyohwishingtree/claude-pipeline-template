@@ -17,6 +17,3 @@ Project-specific testing rules. These supplement the universal test template.
 - Every exported function has tests
 - Happy path + at least one error path per function
 - Edge cases when applicable (empty input, boundary values)
-
-## Known gaps
-<!-- Pipeline adds gaps here when testing patterns are discovered -->

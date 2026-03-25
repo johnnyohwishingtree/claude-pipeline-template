@@ -2,7 +2,7 @@
 
 New source modules follow this structure. Customize import patterns for your project's stack.
 
-**Matching rubric:** `.claude/rubrics/code-quality.md`
+**Matching rubric:** `.knowledge/rubrics/code-quality.md`
 
 ## Structure
 
@@ -37,4 +37,4 @@ export function doSomething(paramName: ParamType): ReturnType {
 
 ## Matching test
 
-Every module must have a corresponding test file. See `.claude/templates/test.md`.
+Every module must have a corresponding test file. See `.knowledge/templates/test.md`.

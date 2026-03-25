@@ -7,7 +7,7 @@ Read this first. Maps every artifact in the pipeline system.
 | File | Purpose |
 |------|---------|
 | `skills/pipeline/SKILL.md` | Autonomous story loop (hourly scheduled task) |
-| `skills/audit/SKILL.md` | Drift detection (3x daily scheduled task) |
+| `skills/audit/SKILL.md` | Convention compliance + drift detection (3x daily scheduled task) |
 | `skills/optimize/SKILL.md` | Resolve gaps + compress knowledge graph |
 | `rules/` | Always-on constraints (auto-loaded) |
 | `settings.json` | Permissions |
@@ -23,7 +23,7 @@ Read this first. Maps every artifact in the pipeline system.
 | `domain/` | Business logic knowledge | When implementing domain-specific features |
 | `rubrics/` | Quality evaluation criteria | During self-review |
 
-All `.knowledge/` files can have `## Known gaps` sections. The pipeline adds gaps during Step 5 (learn). The /optimize skill resolves them.
+Gaps found by /audit or /pipeline are written to `.knowledge/gaps.md`. Fix stories remove entries when resolved. /optimize resolves knowledge gaps and creates stories for code fixes.
 
 ## Folder-level CLAUDE.md files (created by pipeline)
 

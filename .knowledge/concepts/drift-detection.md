@@ -17,6 +17,3 @@ When source code changes, derived artifacts must stay in sync. Drift happens whe
 ## How to prevent
 - Story acceptance criteria should include: "all references updated"
 - /audit skill checks for common drift patterns
-
-## Known gaps
-<!-- Pipeline adds gaps here when drift is found that this doc doesn't cover -->

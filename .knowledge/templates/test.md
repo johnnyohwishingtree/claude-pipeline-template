@@ -2,7 +2,7 @@
 
 Test files follow this structure. Customize the test framework imports for your stack (vitest, jest, etc.).
 
-**Matching rubric:** `.claude/rubrics/test-quality.md`
+**Matching rubric:** `.knowledge/rubrics/test-quality.md`
 
 ## Structure
 

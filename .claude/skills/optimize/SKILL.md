@@ -6,45 +6,47 @@ argument-hint: "[--dry-run]"
 
 # /optimize — Resolve Gaps and Compress Knowledge
 
-Scans `.knowledge/` for `## Known gaps` sections, resolves them by adding guidance, and compresses files that have grown too long.
+Reads `.knowledge/gaps.md` for pending findings, resolves them by updating knowledge or flagging code fixes, and compresses files that have grown too long.
 
-## Step 1: Find gaps
+## Step 1: Read gaps
 
 ```bash
-for f in $(find .knowledge -name "*.md" -not -name "README.md"); do
-  if grep -q "## Known gaps" "$f" 2>/dev/null; then
-    GAPS=$(sed -n '/## Known gaps/,/^## [^K]/p' "$f" | grep "^- " | wc -l | tr -d ' ')
-    if [ "$GAPS" -gt 0 ]; then
-      echo "$f: $GAPS gaps"
-    fi
-  fi
-done
+cat .knowledge/gaps.md 2>/dev/null || echo "No gaps.md found"
 ```
 
-If no gaps found → skip to Step 3.
+If `gaps.md` doesn't exist or has no entries → skip to Step 3.
 
 ## Step 2: Resolve each gap
 
-For each gap entry (e.g., `- mocking execFileSync — found in guardrail.test.ts (#167)`):
+### Knowledge updates
 
-1. Read the "found in" reference to understand the pattern
-2. Add guidance to the SAME file, in the appropriate section above the gaps
-3. Remove the resolved gap entry
-4. If no gaps remain, remove the `## Known gaps` section entirely
+For each entry under `## Knowledge updates`:
 
-**Be specific.** Include code examples from the reference. Not "remember to mock" but the actual mock code.
+1. Read the referenced `.knowledge/` file
+2. Add the missing guidance — be specific, include code examples from the reference
+3. Remove the resolved entry from `gaps.md`
+4. Commit:
+   ```bash
+   git add .knowledge/<path>.md .knowledge/gaps.md
+   git commit -m "optimize: add guidance to <file>"
+   ```
 
-Commit each file separately:
-```bash
-git add .knowledge/<path>.md
-git commit -m "optimize: resolve gap in <file> (#story_numbers)"
-```
+### Code fixes
+
+Entries under `## Code fixes` are for the pipeline to handle via fix stories.
+- If a fix story already exists for the entry → leave it
+- If no fix story exists → create one (follow `.knowledge/templates/story.md`)
+- Add reminder in the story body: "After completing fixes, remove resolved entries from `.knowledge/gaps.md`."
+
+### Drift
+
+Entries under `## Drift` — fix the drift directly if it's a documentation/config issue. If it requires code changes, create a fix story.
 
 ## Step 3: Compress bloated files
 
 Check file sizes:
 ```bash
-for f in $(find .knowledge -name "*.md" -not -name "README.md"); do
+for f in $(find .knowledge -name "*.md" -not -name "README.md" -not -name "gaps.md"); do
   LINES=$(wc -l < "$f" | tr -d ' ')
   if [ "$LINES" -gt 150 ]; then
     echo "BLOATED: $f ($LINES lines)"
@@ -66,9 +68,19 @@ For each bloated file, choose one of two strategies:
 
 Choose promote over compress when different stories would need different parts of the file.
 
-Git history preserves the full version if anything important was lost.
+## Step 4: Clean up gaps.md
 
-## Step 4: Push
+If all entries have been resolved or converted to stories, delete `gaps.md`:
+```bash
+# Only delete if no entries remain
+if ! grep -q "^- " .knowledge/gaps.md 2>/dev/null; then
+  rm .knowledge/gaps.md
+  git add .knowledge/gaps.md
+  git commit -m "optimize: all gaps resolved, removing gaps.md"
+fi
+```
+
+## Step 5: Push
 
 ```bash
 git push origin master
