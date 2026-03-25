@@ -1,49 +1,34 @@
-# .claude/ System Index
+# System Index
 
-Read this file first. It maps every artifact in the pipeline system. Only read individual files when you need their full content.
+Read this first. Maps every artifact in the pipeline system.
 
-## Rules (auto-loaded every session)
+## .claude/ (read-only — human edits only)
 
-| File | Constraint |
-|------|-----------|
-| `rules/tdd.md` | Write a failing test before fixing any bug |
-| `rules/commit-gate.md` | Run typecheck + tests before every commit |
-| `rules/file-conventions.md` | Project structure, `.claude/` layout, naming conventions |
-| `rules/update-index.md` | Update this index when `.claude/` files change |
+| File | Purpose |
+|------|---------|
+| `skills/pipeline/SKILL.md` | Autonomous story loop (hourly scheduled task) |
+| `skills/audit/SKILL.md` | Drift detection (3x daily scheduled task) |
+| `skills/optimize/SKILL.md` | Resolve gaps + compress knowledge graph |
+| `rules/` | Always-on constraints (auto-loaded) |
+| `settings.json` | Permissions |
 
-## Templates + Rubric Pairs
+## .knowledge/ (read-write — pipeline edits freely)
 
-| Template | Rubric | What it structures |
-|----------|--------|--------------------|
-| `templates/module.md` | `rubrics/code-quality.md` | Source modules |
-| `templates/test.md` | `rubrics/test-quality.md` | Test files |
-| `templates/skill.md` | `rubrics/skill-quality.md` | Skill definitions |
-| `templates/epic.md` | — | Epic issues |
-| `templates/story.md` | — | Story issues |
-| `templates/rubric.md` | Self | Rubric files |
+| Directory | What it contains | When to read |
+|-----------|-----------------|-------------|
+| `templates/` | File structure definitions (module, test, story, epic) | When creating files |
+| `patterns/` | Multi-file change recipes | When implementing a multi-step task |
+| `concepts/` | Cross-cutting principles (drift detection, error handling) | When the story's Knowledge section references them |
+| `conventions/` | Project-specific rules (testing, styling) | When writing code that follows project conventions |
+| `domain/` | Business logic knowledge | When implementing domain-specific features |
+| `rubrics/` | Quality evaluation criteria | During self-review |
 
-## Patterns
+All `.knowledge/` files can have `## Known gaps` sections. The pipeline adds gaps during Step 5 (learn). The /optimize skill resolves them.
 
-| Pattern | Trigger | Templates Used |
-|---------|---------|----------------|
-| *(create project-specific patterns as recurring changes emerge)* | | |
+## Folder-level CLAUDE.md files (created by pipeline)
 
-See `patterns/README.md` for how to create patterns and how rules/templates/patterns/rubrics connect.
+Short pointer files (max 5 lines) placed in source directories when directory-specific conventions are discovered. Auto-loaded by Claude Code when working in that directory.
 
-## Skills
+Template: `.knowledge/templates/folder-claude-md.md`
 
-| Skill | Purpose | Invocation |
-|-------|---------|------------|
-| `skills/pipeline/SKILL.md` | Autonomous story loop — merge, implement, verify, push, plan | `/pipeline` |
-
-## Dependency Graph
-
-```
-Story body references → Patterns → Templates
-                                        ↓
-Rules (always on)              Rubrics evaluate output
-```
-
-Stories list which patterns and templates to follow. Patterns reference templates for individual file structure. Rubrics evaluate the result. Rules apply to everything.
-
-<!-- pipeline:index-version:1 -->
+These point to `.knowledge/` files — they don't contain the knowledge themselves.
