@@ -22,19 +22,25 @@ See: .knowledge/<path>.md
 ## Examples
 
 ```markdown
-# Schemas
-Country form schemas. Every field needs autoFillSource for smart delta.
-See: .knowledge/domain/form-engine.md
+# Services
+
+Lowest level — never import stores or UI code. Accept runtime state as parameters.
+
+See: .knowledge/concepts/dependency-direction.md
 ```
 
 ```markdown
-# Hooks
-Custom hooks extracted from screens. Hooks own state + effects, screens are thin render layers.
-See: .knowledge/conventions/state-management.md
+# Tests
+
+Mirrors src/ structure. Each source file has a matching test file.
+
+See: .knowledge/conventions/testing.md
 ```
 
 ```markdown
-# Stores
-Zustand stores. Stores never import other stores — cross-store coordination belongs in hooks.
+# Components
+
+Receive data via props only. No direct store or service imports.
+
 See: .knowledge/concepts/dependency-direction.md
 ```
