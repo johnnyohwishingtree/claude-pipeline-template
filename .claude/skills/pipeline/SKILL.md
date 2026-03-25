@@ -63,6 +63,12 @@ If checks fail → fix → rerun. Up to 6 attempts.
 
 If still failing after 6 attempts → push WIP branch, create draft PR, reset story to `pending`, stop.
 
+**Failure discipline:**
+- If the same failure repeats after a fix attempt, try a different approach — don't retry the same fix
+- If a failure is pre-existing (exists on master too), note it and move on — don't block the story
+- Run verification in the foreground — never spawn background processes to "wait and see"
+- Clean up any processes you started before moving to the next step
+
 ## Step 5: Learn — update the knowledge graph
 
 After verify passes, reflect on each task you implemented:
