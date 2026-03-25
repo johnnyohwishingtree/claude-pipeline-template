@@ -1,153 +1,116 @@
 # Claude Pipeline Template
 
-A self-building project pipeline powered by Claude Code scheduled tasks. No GitHub Actions, no CI runners — just Claude reading issues, writing code, and merging PRs.
+A self-improving autonomous development pipeline powered by Claude Code scheduled tasks. No CI runners, no CLI tools — just markdown files that Claude reads, follows, and improves.
 
 ## How It Works
 
-1. A **scheduled task** runs the `/pipeline` skill on a regular interval
-2. The pipeline merges any open PRs, picks the next pending story, implements it, verifies quality, and pushes a PR
-3. When the story queue is empty, it plans the next epic (analyzes the codebase, creates issues)
-4. Repeat
+Two scheduled tasks run on claude.ai:
 
-The entire loop — planning, coding, testing, reviewing, merging — runs autonomously.
+**Hourly — `/pipeline`:** picks up pending stories, implements them, verifies, merges, and plans new work when the queue is empty. After each story, it reflects on what the templates were missing and updates them.
 
-## What's Included
+**3x daily — `/audit`:** scans the codebase for drift, dead code, and violations. Adds findings as gaps to the knowledge graph and creates fix stories.
+
+The entire loop — planning, coding, testing, learning, improving — runs autonomously.
+
+## The Knowledge Graph
+
+The pipeline doesn't just write code — it builds a knowledge graph about your project that makes future code better:
 
 ```
-.claude/
-├── skills/
-│   └── pipeline/SKILL.md    # The autonomous pipeline loop
-├── rules/                    # Always-on constraints (auto-loaded every session)
-│   ├── README.md             # How rules/templates/patterns/rubrics relate
-│   ├── tdd.md                # Write failing test before fixing bugs
-│   ├── commit-gate.md        # Run checks before every commit
-│   └── file-conventions.md   # Project structure and naming conventions
-├── templates/                # Single-file structure definitions (read on demand)
-│   ├── epic.md               # Epic issue structure
-│   ├── story.md              # Story issue structure (with Context/Patterns/Key Types)
-│   ├── skill.md              # Skill file structure
-│   ├── module.md             # Source module structure
-│   ├── test.md               # Test file structure
-│   └── rubric.md             # Quality rubric structure
-├── rubrics/                  # Quality evaluation criteria (read on demand)
-│   ├── code-quality.md       # Architecture, testing, style, error handling
-│   ├── test-quality.md       # Coverage, assertions, isolation, clarity
-│   └── skill-quality.md      # Clarity, completeness, self-awareness, efficiency
-└── patterns/                 # Multi-file change recipes (read on demand)
-    └── README.md             # Guide + diagram showing how everything connects
-CLAUDE.md                     # Project context (customize this)
+.knowledge/
+├── concepts/        # Cross-cutting principles (drift detection, error handling)
+├── conventions/     # Project-specific rules (testing patterns, styling, storage)
+├── domain/          # Business logic (what the code should do)
+├── templates/       # File structure definitions (how to write a module, test, etc.)
+├── patterns/        # Multi-file recipes (how to add a screen, API endpoint, etc.)
+└── rubrics/         # Quality criteria (what "good" means)
 ```
+
+Every file can have a `## Known gaps` section. When the pipeline implements a story and discovers something the template didn't cover, it adds a gap entry. The `/optimize` skill resolves gaps by adding the missing guidance.
+
+Over time, the templates get more complete → the pipeline follows better instructions → fewer gaps → better code.
 
 ## Setup
 
-### 1. Fork or clone this template
+### 1. Create your repo from this template
 
 ```bash
 gh repo create my-project --template johnnyohwishingtree/claude-pipeline-template --private
 cd my-project
 ```
 
-### 2. Customize `CLAUDE.md`
+### 2. Customize
 
-Replace the skeleton with your project's actual context:
-- Tech stack
-- Project structure
-- Run commands (`pnpm test`, `pnpm typecheck`, etc.)
-- Architecture decisions
-- Any rules or conventions
+- **`CLAUDE.md`** — replace with your project's context, tech stack, run commands
+- **`.claude/skills/pipeline/SKILL.md`** — find-and-replace `OWNER/REPO` with your org/repo, update verify commands
+- **`.knowledge/conventions/`** — add your project's testing, styling, and other conventions
+- **`.knowledge/domain/`** — add business logic knowledge specific to your project
 
-### 3. Customize the pipeline skill
+### 3. Set up scheduled tasks on claude.ai
 
-Open `.claude/skills/pipeline/SKILL.md` and find-and-replace:
-- `OWNER/REPO` → your GitHub org/repo (e.g., `myorg/my-project`)
-- Verification commands in Step 4 → your project's build/test commands
-
-### 4. Set up the scheduled task
-
-In Claude Code, create a scheduled task that runs the pipeline:
-
+**Pipeline (hourly):**
 ```
 Read CLAUDE.md for project context.
 Read .claude/skills/pipeline/SKILL.md and follow every step.
 ```
 
-Set it to run on whatever interval makes sense (e.g., every 3 hours).
+**Audit (3x daily):**
+```
+Read CLAUDE.md for project context.
+Read .claude/skills/audit/SKILL.md and follow every step.
+```
 
-### 5. Seed your first epic
-
-Create your first epic and stories manually (or ask Claude):
+### 4. Create labels and seed work
 
 ```bash
-gh label create "epic" --color "0E8A16" 2>/dev/null || true
-gh label create "story" --color "1D76DB" 2>/dev/null || true
-gh label create "pending" --color "FBCA04" 2>/dev/null || true
+gh label create "epic" --color "0E8A16"
+gh label create "story" --color "1D76DB"
+gh label create "pending" --color "FBCA04"
+gh label create "in-progress" --color "0E8A16"
+gh label create "completed" --color "0075CA"
 
-gh issue create --title "Epic: <your goal>" --label "epic" \
-  --body "## Goal
-<what you're building>
-
-## Stories
-- [ ] #__ Story 1
-- [ ] #__ Story 2
-
-## Success Criteria
-- <how you know it's done>"
-
-gh issue create --title "Story: <first task>" --label "story" --label "pending" \
-  --body "## Description
-<what to implement>
-
-## Acceptance Criteria
-- [ ] Implementation complete
-- [ ] Tests pass"
+gh issue create --title "Story: <your first task>" --label "story,pending" \
+  --body "<follow .knowledge/templates/story.md>"
 ```
 
-The next pipeline run will pick up the first pending story automatically.
+The next pipeline run picks it up.
 
-## Token Optimization
+## Directory Structure
 
-Stories use a structured format that minimizes how much code the pipeline reads:
+```
+.claude/ (read-only — human edits only)
+├── skills/
+│   ├── pipeline/SKILL.md     # The autonomous loop
+│   ├── audit/SKILL.md        # Drift detection
+│   └── optimize/SKILL.md     # Resolve gaps, compress knowledge
+├── rules/                     # Always-on constraints (auto-loaded)
+└── index.md                   # System manifest
 
-- **Context** section lists the exact files (and line ranges) needed — no codebase exploration
-- **Patterns & Templates** section points to conventions to follow — no reverse-engineering
-- **Key Types** section inlines relevant type definitions — no reading entire type files
-
-This reduces token usage by ~4-5x compared to unstructured stories.
-
-## Adding Design Patterns
-
-When you notice a recurring multi-file change (e.g., "add a new API endpoint", "add a new React screen"), create a pattern in `.claude/patterns/`:
-
-```markdown
-# Pattern: Add API Endpoint
-
-When adding a new REST endpoint.
-
-## Files to modify (in order)
-
-### 1. `src/routes/<resource>.ts` — Add route handler
-### 2. `src/services/<resource>.ts` — Add business logic
-### 3. `__tests__/services/<resource>.test.ts` — Add tests
-
-## Checklist
-- [ ] Route registered
-- [ ] Service function tested
-- [ ] Types exported
+.knowledge/ (read-write — pipeline edits freely)
+├── concepts/                  # Cross-cutting principles
+├── conventions/               # Project-specific rules
+├── domain/                    # Business logic
+├── templates/                 # File structure definitions
+├── patterns/                  # Multi-file change recipes
+└── rubrics/                   # Quality evaluation criteria
 ```
 
-Reference patterns in story bodies so the pipeline follows them automatically.
+**`.claude/` is read-only.** Skills and rules need human approval to change. This prevents the pipeline from weakening its own constraints.
 
-## Template-Rubric Pairs
+**`.knowledge/` is read-write.** Templates, patterns, and concepts evolve as the pipeline learns. Gaps get added during implementation, resolved by `/optimize`, and compressed when files get too long.
 
-Every artifact type has a matching template (structure) and rubric (quality criteria):
+## The Self-Improvement Loop
 
-| Artifact | Template | Rubric |
-|----------|----------|--------|
-| Source module | `templates/module.md` | `rubrics/code-quality.md` |
-| Test file | `templates/test.md` | `rubrics/test-quality.md` |
-| Skill file | `templates/skill.md` | `rubrics/skill-quality.md` |
+```
+Story implemented
+  → Pipeline reflects: "template didn't cover X, found guidance in Y"
+  → Gap added to template: "- X — found in Y (#story)"
+  → /optimize resolves gap: adds X to template, removes gap entry
+  → Next story using that template: X is covered, no gap needed
+  → Template converges
+```
 
-The pipeline evaluates its own output against rubrics before merging.
+This is the autoresearch pattern applied to code quality — try, measure, learn, improve. But instead of optimizing model weights, you're optimizing the instructions that guide the AI agent.
 
 ## License
 

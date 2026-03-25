@@ -1,224 +1,129 @@
 ---
 name: pipeline
-description: Autonomous story pipeline — implement, verify, merge, plan
+description: Autonomous story pipeline — implement, verify, merge, learn, plan
 argument-hint: "[--issue N]"
 ---
 
 # /pipeline — Autonomous Story Pipeline
 
-The self-building loop. Merges open PRs, implements pending stories, verifies quality, and plans new work when the queue is empty.
+Implements pending stories, verifies quality, merges, updates the knowledge graph, and plans new work when the queue is empty.
 
-This file is the single source of truth for the pipeline. Claude Code scheduled tasks reference it directly:
+**Scheduled task prompt:**
 ```
 Read CLAUDE.md for project context.
 Read .claude/skills/pipeline/SKILL.md and follow every step.
 ```
 
-## Usage
-```
-/pipeline              # Run one full cycle
-/pipeline --issue N    # Implement a specific issue
-```
-
-## Full Cycle
-
-### Step 1: Merge open PRs
-
-Ensure the main branch is current before starting new work.
+## Step 1: Merge open PRs
 
 ```bash
-# CUSTOMIZE: replace OWNER/REPO with your GitHub repo
-gh pr list --repo OWNER/REPO --state open --json number,title,headRefName --jq '.[]'
+REPO="OWNER/REPO"  # CUSTOMIZE: your org/repo
+gh pr list --repo $REPO --state open --json number,title,headRefName --jq '.[]'
 ```
 
-For each open PR:
-1. Read the diff: `gh pr diff $NUMBER --repo OWNER/REPO`
-2. If clean: approve and squash merge
-3. If issues: checkout the branch, fix them, run verification, push, then approve and squash merge
+For each open PR: review the diff, merge if clean, fix if not.
 
-After merging all PRs:
 ```bash
 git checkout master && git pull origin master
 ```
 
-### Step 2: Find next story
+## Step 2: Find next story
 
 ```bash
-# If --issue N was specified, use that issue number
-# Otherwise find the next pending story (lowest number first)
-gh issue list --repo OWNER/REPO --label "story" --label "pending" --state open --json number,title --jq '.[0]'
+gh issue list --repo $REPO --label "story" --label "pending" --state open --json number,title --jq '.[0]'
 ```
 
-If no pending stories, skip to **Step 6** (plan next epic).
+If no pending stories → skip to **Step 7**.
 
-### Step 3: Implement
+## Step 3: Implement
 
 ```bash
 NUMBER=<issue number>
-gh issue edit $NUMBER --repo OWNER/REPO --remove-label "pending" --add-label "in-progress"
+gh issue edit $NUMBER --repo $REPO --remove-label "pending" --add-label "in-progress"
 git fetch origin master && git checkout -b story/issue-$NUMBER origin/master
 ```
 
-Read the issue body and implement it. The story body is your primary guide — it tells you exactly what to read and what to follow.
+Read the story body. Implementation order:
+1. Read the **Knowledge** section — these `.knowledge/` files give you context
+2. Read the **Tasks** section — each task references a template or pattern to follow
+3. Read the **Context** section — the minimum source files to read
+4. Implement each task following the referenced `.knowledge/` file
 
-**Token-efficient implementation order:**
-1. Read the story's **Context** section — these are the ONLY files you need to read. Do NOT explore the codebase beyond what's listed.
-2. Read the story's **Patterns & Templates** section — follow these INSTEAD of reverse-engineering conventions from existing code.
-3. Read the story's **Key Types** section — use these inline types instead of reading type definition files.
-4. If the story doesn't have these sections (older stories), read the files listed in "Files to Create/Modify" plus the relevant templates from `.claude/templates/`.
+## Step 4: Verify (up to 6 attempts)
 
-**Always:**
-- Run `pnpm typecheck` after every file change
-- Run `pnpm test` before committing
-- Never use `any` types — fix the root cause
-- Every new module needs tests
-
-### Step 3b: Self-update check
-
-After implementing, check if your changes affect the pipeline itself:
-- **Did you add new commands or flags?** Update this skill file to use them.
-- **Did you change file structures?** Update the relevant templates.
-- **Did you change quality criteria?** Update the relevant rubrics.
-- **Did you add/remove/rename any `.claude/` files?** Update `.claude/index.md` to reflect the change.
-
-If any updates are needed, make them now — include the changes in your commit. The pipeline improves itself by keeping its own instructions current.
-
-If you created or modified any skill files, evaluate them against `.claude/rubrics/skill-quality.md` before proceeding.
-
-### Step 4: Verify and fix loop
-
-This is the core quality gate. Keep iterating until verification passes or you exhaust all attempts.
-
-**Attempt 1 of 6:**
-
-Run all checks:
+Run your project's verification commands (from CLAUDE.md):
 ```bash
-# CUSTOMIZE: replace with your project's verification commands
+# CUSTOMIZE: your project's check commands
 pnpm build && pnpm typecheck && pnpm test
 ```
 
-If any fail, read the errors, fix them, and re-run. Do not proceed until all pass.
+If checks fail → fix → rerun. Up to 6 attempts.
 
-Read the decision:
-- **All pass**: proceed to Step 5.
-- **Any fail**: fix the issues and loop back to the top of Step 4. This counts as your next attempt.
+If still failing after 6 attempts → push WIP branch, create draft PR, reset story to `pending`, stop.
 
-**You have up to 6 attempts.** Use the error output from each failed run to guide your fixes.
+## Step 5: Learn — update the knowledge graph
 
-### Step 4b: If verification fails after 6 attempts — discard
+After verify passes, reflect on each task you implemented:
 
-If after 6 attempts verification still fails:
-
-1. Push the branch and create a PR anyway (so the work is visible), but do **NOT** merge:
-   ```bash
-   git add <specific files>
-   git commit -m "WIP: #$NUMBER — failed verification after 6 attempts"
-   git push -u origin story/issue-$NUMBER
-   TITLE=$(gh issue view $NUMBER --repo OWNER/REPO --json title --jq .title)
-   gh pr create --repo OWNER/REPO \
-     --head story/issue-$NUMBER --base master \
-     --title "WIP: $TITLE" \
-     --body "Failed verification after 6 attempts. Needs human review. Ref: #$NUMBER"
+1. **Did you have to figure something out not covered by any `.knowledge/` file?**
+   → Add a gap entry to the file you followed:
+   ```markdown
+   ## Known gaps
+   - <what was missing> — found guidance in <where> (#$NUMBER)
    ```
-2. Reset the issue so a future run can retry:
-   ```bash
-   gh issue edit $NUMBER --repo OWNER/REPO --remove-label "in-progress" --add-label "pending"
-   gh issue comment $NUMBER --repo OWNER/REPO \
-     --body "Pipeline failed to meet quality threshold after 6 attempts. WIP PR created for visibility. Resetting to pending."
-   ```
-3. **Stop.** Do not proceed to Step 5 or Step 6.
 
-### Step 5: Push, PR, merge, close (only if Step 4 passed)
+2. **Did you discover a concept that applies broadly but isn't documented?**
+   → Create `.knowledge/concepts/<name>.md`
+
+3. **Did you learn a project convention that isn't written down?**
+   → Create or update `.knowledge/conventions/<name>.md`
+
+4. **Did you encounter domain knowledge the pipeline should know?**
+   → Create or update `.knowledge/domain/<name>.md`
+
+If nothing was missing — do nothing. No gaps = templates are working well.
+
+Include modified `.knowledge/` files in your commit.
+
+## Step 6: Push, PR, merge
 
 ```bash
-git add <specific files> # never git add -A
+git add <specific files>
 git commit -m "<descriptive message>
 
 Closes #$NUMBER"
 git push -u origin story/issue-$NUMBER
+
+TITLE=$(gh issue view $NUMBER --repo $REPO --json title --jq .title)
+gh pr create --repo $REPO --head story/issue-$NUMBER --base master --title "$TITLE" \
+  --body "Closes #$NUMBER — implemented by pipeline."
+PR_NUM=$(gh pr list --repo $REPO --head story/issue-$NUMBER --json number --jq '.[0].number')
+gh pr merge $PR_NUM --repo $REPO --squash
 ```
 
-Create and merge the PR:
+Close story and auto-close epic if all stories done:
 ```bash
-TITLE=$(gh issue view $NUMBER --repo OWNER/REPO --json title --jq .title)
-gh pr create --repo OWNER/REPO \
-  --head story/issue-$NUMBER --base master \
-  --title "$TITLE" \
-  --body "Closes #$NUMBER — implemented autonomously."
+gh issue edit $NUMBER --repo $REPO --remove-label "in-progress" --add-label "completed"
+gh issue close $NUMBER --repo $REPO
 
-PR_NUMBER=$(gh pr list --repo OWNER/REPO --head story/issue-$NUMBER --json number --jq '.[0].number')
-gh pr review $PR_NUMBER --repo OWNER/REPO --approve --body "Self-verified: all checks pass."
-gh pr merge $PR_NUMBER --repo OWNER/REPO --squash
+EPIC_LABEL=$(gh issue view $NUMBER --repo $REPO --json labels --jq '[.labels[].name | select(startswith("epic:"))] | .[0]')
+if [ -n "$EPIC_LABEL" ] && [ "$EPIC_LABEL" != "null" ]; then
+  OPEN=$(gh issue list --repo $REPO --state open --json labels --jq "[.[] | select(.labels | map(.name) | any(. == \"$EPIC_LABEL\"))] | length")
+  if [ "$OPEN" -eq 0 ]; then
+    EPIC_NUM=$(gh issue list --repo $REPO --label "epic,$EPIC_LABEL" --state open --json number --jq '.[0].number')
+    [ -n "$EPIC_NUM" ] && [ "$EPIC_NUM" != "null" ] && gh issue close "$EPIC_NUM" --repo $REPO --comment "All stories completed."
+  fi
+fi
 ```
 
-Close the issue:
-```bash
-gh issue edit $NUMBER --repo OWNER/REPO --remove-label "in-progress" --add-label "completed"
-gh issue close $NUMBER --repo OWNER/REPO
-git checkout master && git pull origin master
-```
+## Step 7: Optimize (when queue is empty)
 
-### Step 6: Plan next epic (when queue is empty)
+Read and follow `.claude/skills/optimize/SKILL.md`.
 
-Only runs when there are no pending stories left.
+## Step 8: Plan next epic (when queue is empty and optimization is done)
 
-```bash
-PENDING=$(gh issue list --repo OWNER/REPO --label "story" --label "pending" --state open --json number --jq 'length')
-if [ "$PENDING" -gt 0 ]; then exit 0; fi
-```
+Read the codebase and `.knowledge/` knowledge graph. Identify the highest-impact improvement. Create an epic with 2-4 stories following `.knowledge/templates/epic.md` and `.knowledge/templates/story.md`.
 
-Analyze the project to identify the highest-impact improvement:
-1. Read the codebase
-2. Check recently closed issues to avoid duplicates:
-   ```bash
-   gh issue list --repo OWNER/REPO --state closed --limit 10 --json number,title
-   ```
-3. Look for: missing features mentioned in CLAUDE.md, test coverage gaps, error handling improvements
+Populate every story section — especially Knowledge (which concepts/conventions apply) and Tasks (which templates/patterns to follow). This minimizes token waste during implementation.
 
-Read `.claude/index.md` to see available templates and patterns, then read the specific ones you need:
-- `.claude/templates/epic.md` — structure for epic bodies
-- `.claude/templates/story.md` — structure for story bodies
-
-Create an epic and stories following the templates:
-```bash
-gh label create "epic:<slug>" --repo OWNER/REPO --color "0E8A16" --description "Epic: <title>" 2>/dev/null || true
-
-gh issue create --repo OWNER/REPO \
-  --title "Epic: <goal>" --label "epic" --label "epic:<slug>" \
-  --body "<follow epic template: goal, context, story checklist, success criteria, out of scope>"
-
-# IMPORTANT: populate ALL story template sections to minimize token waste:
-#   - Context: list the minimum files/line-ranges needed
-#   - Patterns & Templates: which patterns apply
-#   - Key Types: inline the relevant type definitions
-gh issue create --repo OWNER/REPO \
-  --title "Story: <task>" --label "story" --label "pending" --label "epic:<slug>" \
-  --body "<follow story template — every section>"
-
-# Update epic body with actual issue numbers
-gh issue edit <epic_number> --repo OWNER/REPO --body "..."
-```
-
-Story sizing rules:
-- Each story produces a shippable, testable increment
-- Combine tightly coupled small steps into one story
-- Split steps that touch different layers
-- If a story has no acceptance criteria beyond "files exist," merge it with another
-
-If a story involves creating a new skill, read `.claude/templates/skill.md` and use it as the starting structure.
-
-The next pipeline run will pick up the first new story.
-
-## Token Optimization
-
-- Don't read files you've already read in this session
-- Use `pnpm typecheck` incrementally after each file
-- Keep implementation focused — one story, one branch, one PR
-- Read story Context section instead of exploring the codebase
-- Read templates/patterns instead of reverse-engineering conventions
-
-## Template Maintenance
-
-<!-- pipeline:skill-template-version:1 -->
-<!-- Last updated: 2026-03-23 -->
-<!-- Update this skill when: new verification commands, new label conventions, or the pipeline loop changes -->
+The next pipeline run picks up the first new story.
