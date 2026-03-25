@@ -65,7 +65,8 @@ If still failing after 6 attempts → push WIP branch, create draft PR, reset st
 
 **Failure discipline:**
 - If the same failure repeats after a fix attempt, try a different approach — don't retry the same fix
-- If a failure is pre-existing (exists on master too), note it and move on — don't block the story
+- If a failure is pre-existing (exists on master too), fix it now or add it to `.knowledge/gaps.md` as a code fix so a future story picks it up. Never ignore it — every pipeline run will hit it.
+- If you created a test, run it individually before committing. If it OOMs or crashes, that's a bug in your test — fix it, don't label it "environment issue"
 - Run verification in the foreground — never spawn background processes to "wait and see"
 - Clean up any processes you started before moving to the next step
 
