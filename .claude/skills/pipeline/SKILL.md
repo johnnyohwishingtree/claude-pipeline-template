@@ -90,7 +90,37 @@ If nothing was missing — do nothing. No gaps = knowledge graph is working well
 
 Include modified `.knowledge/` files and any new folder `CLAUDE.md` files in your commit.
 
-## Step 6: Push, PR, merge
+## Step 6: Self-review against rubrics
+
+Before committing, review your own diff against the relevant rubrics. This catches quality issues that verification (lint/typecheck/test) misses.
+
+```bash
+git diff --cached --stat  # or git diff if not yet staged
+```
+
+Read the diff and check against:
+- `.knowledge/rubrics/code-quality.md` — for any source files changed
+- `.knowledge/rubrics/test-quality.md` — for any test files changed
+- `.knowledge/rubrics/skill-quality.md` — for any skill files changed
+
+For each criterion in the rubric, scan the diff:
+
+**Fix immediately** (don't commit until fixed):
+- `any` types — find the real type
+- Unused imports or variables — delete them
+- Empty catch blocks — add error handling
+- Missing tests for new functions — write them
+- Functions over 50 lines — split them
+- Anti-patterns listed in the relevant `.knowledge/` convention files
+
+**Add to gaps.md** (can't fix without human input):
+- Architectural questions about where code belongs
+- Unclear requirements that led to guesswork
+- Convention gaps discovered during review
+
+After fixing, re-run verification to confirm fixes don't break anything.
+
+## Step 7: Push, PR, merge
 
 ```bash
 git add <specific files>
@@ -121,11 +151,11 @@ if [ -n "$EPIC_LABEL" ] && [ "$EPIC_LABEL" != "null" ]; then
 fi
 ```
 
-## Step 7: Optimize (when queue is empty)
+## Step 8: Optimize (when queue is empty)
 
 Read and follow `.claude/skills/optimize/SKILL.md`.
 
-## Step 8: Plan next epic (when queue is empty and optimization is done)
+## Step 9: Plan next epic (when queue is empty and optimization is done)
 
 Read the codebase and `.knowledge/` knowledge graph. Identify the highest-impact improvement. Create an epic with 2-4 stories following `.knowledge/templates/epic.md` and `.knowledge/templates/story.md`.
 
