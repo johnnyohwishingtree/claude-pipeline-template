@@ -52,11 +52,21 @@ for f in $(find .knowledge -name "*.md" -not -name "README.md"); do
 done
 ```
 
-For each bloated file:
-1. Read the full content
-2. Rewrite it to be concise — keep all knowledge but remove redundancy, merge overlapping sections, tighten examples
-3. Target: under 100 lines
-4. Git history preserves the full version if anything important was lost
+For each bloated file, choose one of two strategies:
+
+**Compress** (if content is cohesive — one topic with too many words):
+1. Rewrite to be concise — keep all knowledge, remove redundancy, tighten examples
+2. Target: under 100 lines
+
+**Promote to directory** (if content has 3+ distinct sub-topics):
+1. Create a directory with the same name: `conventions/testing/`
+2. Split into focused files: `core.md`, `mocking.md`, `e2e.md`
+3. Each file should be independently useful — an agent reading one doesn't need the others
+4. Delete the original file (or convert to a README.md in the new directory)
+
+Choose promote over compress when different stories would need different parts of the file.
+
+Git history preserves the full version if anything important was lost.
 
 ## Step 4: Push
 
