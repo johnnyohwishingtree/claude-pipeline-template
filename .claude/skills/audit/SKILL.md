@@ -41,6 +41,13 @@ Add more checks as new folder CLAUDE.md files are created — read the rules, th
 - README commands that don't match actual CLI behavior
 - Config references to files that don't exist
 
+### Index sync (`.claude/index.md`)
+Compare the index against what actually exists on disk. Fix any mismatches directly (don't add to gaps — just update the file):
+- Skills listed that don't exist (deleted but not removed from index)
+- Skills that exist but aren't listed
+- `.knowledge/` directories or files added but not listed in the knowledge table
+- Run: `ls .claude/skills/` and `ls .knowledge/*/` and diff against index.md
+
 ## Step 3: Evaluate each finding
 
 For every violation found, decide:
