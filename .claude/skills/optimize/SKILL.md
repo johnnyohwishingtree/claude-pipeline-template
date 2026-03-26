@@ -36,6 +36,7 @@ For each entry under `## Knowledge updates`:
 Entries under `## Code fixes` are for the pipeline to handle via fix stories.
 - If a fix story already exists for the entry → leave it
 - If no fix story exists → create one (follow `.knowledge/templates/story.md`)
+- **Include the test strategy** from the gap entry in the story's acceptance criteria. Every fix must have a test that prevents recurrence.
 - Add reminder in the story body: "After completing fixes, remove resolved entries from `.knowledge/gaps.md`."
 
 ### Drift

@@ -70,14 +70,16 @@ Write all findings to `.knowledge/gaps.md`. Each entry includes: what's wrong, w
 Findings from audits and pipeline runs. Fix stories resolve these and remove the entry.
 
 ## Code fixes
-- `src/path/to/file` violates <rule> — <what should change> (audit-YYYY-MM-DD)
+- `src/path/to/file` violates <rule> — <what should change>. Test: <how to prevent recurrence>. (audit-YYYY-MM-DD)
 
 ## Knowledge updates
-- `.knowledge/conventions/foo.md` says X but codebase does Y everywhere — update convention (audit-YYYY-MM-DD)
+- `.knowledge/conventions/foo.md` says X but codebase does Y everywhere — update convention. (audit-YYYY-MM-DD)
 
 ## Drift
-- Reference to `path/that/moved` in `.knowledge/foo.md` — update path (audit-YYYY-MM-DD)
+- Reference to `path/that/moved` in `.knowledge/foo.md` — update path. Test: structural test catches this. (audit-YYYY-MM-DD)
 ```
+
+Each gap entry must include a **test strategy** — how to prevent this from recurring.
 
 If `gaps.md` already exists, **merge** new findings — don't duplicate entries that are already there.
 

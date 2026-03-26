@@ -75,10 +75,10 @@ If still failing after 6 attempts → push WIP branch, create draft PR, reset st
 After verify passes, reflect on each task you implemented:
 
 1. **Did you have to figure something out not covered by any `.knowledge/` file?**
-   → Add an entry to `.knowledge/gaps.md` under the appropriate section:
+   → Add an entry to `.knowledge/gaps.md` with a test strategy to prevent recurrence:
    ```markdown
    ## Knowledge updates
-   - `.knowledge/<file>.md` missing guidance on <topic> — found in <where> (#$NUMBER)
+   - `.knowledge/<file>.md` missing guidance on <topic> — found in <where>. Test: <how to catch this automatically>. (#$NUMBER)
    ```
 
 2. **Did you discover a concept that applies broadly but isn't documented?**
