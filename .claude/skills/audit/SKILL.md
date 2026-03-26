@@ -41,6 +41,20 @@ Add more checks as new folder CLAUDE.md files are created — read the rules, th
 - README commands that don't match actual CLI behavior
 - Config references to files that don't exist
 
+### Knowledge graph integrity
+Run the graph engine to find structural issues:
+```bash
+npx tsx scripts/knowledge-graph.ts orphans       # disconnected nodes
+npx tsx scripts/knowledge-graph.ts unreferenced   # policies no CLAUDE.md loads
+npx tsx scripts/knowledge-graph.ts stats          # overall graph health
+```
+
+### Regenerate diagram
+```bash
+npx tsx scripts/generate-knowledge-diagram.ts
+```
+Commit if changed.
+
 ### Index sync (`.knowledge/index.md`)
 Compare the index against what actually exists on disk. Fix any mismatches directly (don't add to gaps — just update the file):
 - Skills listed that don't exist (deleted but not removed from index)

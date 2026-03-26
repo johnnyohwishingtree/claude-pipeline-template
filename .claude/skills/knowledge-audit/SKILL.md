@@ -31,6 +31,11 @@ For each policy, read its SCOPE and RULES sections to determine what to check an
 
 ## Step 3: Check knowledge test coverage
 
+Run the graph engine to find unenforced policies:
+```bash
+npx tsx scripts/knowledge-graph.ts unenforced    # policies with no structural test
+```
+
 For each `.knowledge/policies/` file, read its ENFORCEMENT section and verify the referenced test exists. The `knowledge-test-coverage.test.ts` meta-test tracks the full mapping.
 
 For any policy **without** an ENFORCEMENT test:
@@ -57,7 +62,13 @@ Every fix needs a test to prevent regression. For each violation, specify:
 
 If no existing test covers the violation, create one. The test should run at verification time (< 1 second) so it catches drift immediately.
 
-## Step 6: Check knowledge consistency
+## Step 6: Check knowledge consistency (impact analysis)
+
+Use the graph engine to check cascade effects:
+```bash
+npx tsx scripts/knowledge-graph.ts deps <file.md>     # what this file depends on
+npx tsx scripts/knowledge-graph.ts impact <file.md>    # what breaks if this changes
+```
 
 Scan for contradictions between knowledge files. Two files should never give opposite instructions about the same topic.
 

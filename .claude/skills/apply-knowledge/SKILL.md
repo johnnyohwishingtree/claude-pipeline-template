@@ -47,11 +47,15 @@ Apply fixes one file at a time:
 
 ## Step 5: Cascade — check files that reference this knowledge
 
-After updating a policy or model, check for cascade effects:
-1. Find all folder CLAUDE.md files that `See:` this file
-2. Find all other knowledge files that reference this file
-3. Verify they're still consistent with the updated content
-4. If a referenced fact changed, update all referencing files
+Use the graph engine's impact query to find everything affected:
+```bash
+npx tsx scripts/knowledge-graph.ts impact <knowledge-file.md>
+```
+
+For each affected node:
+1. Verify it's still consistent with the updated content
+2. If a referenced fact changed, update the referencing file
+3. If a folder CLAUDE.md links to this file, verify the folder's code still complies
 
 This prevents denormalization drift — one source of truth, all references stay in sync.
 
