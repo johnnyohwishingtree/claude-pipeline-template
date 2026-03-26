@@ -18,9 +18,8 @@ Project knowledge graph. The pipeline creates and updates these files freely.
 ```
 .knowledge/
 ├── index.md       # System manifest — kept in sync by /audit
-├── concepts/      # Cross-cutting principles
-├── conventions/   # Project-specific rules
-├── domain/        # Business logic knowledge
+├── policies/      # Constraints (SCOPE/RULES/ENFORCEMENT) by scope
+├── models/        # Business entities (ENTITIES/RELATIONSHIPS/INVARIANTS)
 ├── templates/     # File structure definitions
 ├── patterns/      # Multi-file change recipes
 └── rubrics/       # Quality evaluation criteria

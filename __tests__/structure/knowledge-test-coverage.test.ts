@@ -1,98 +1,81 @@
 /**
- * Meta-test: every testable .knowledge/ convention has a structural test.
+ * Meta-test: every testable policy has a structural test.
  *
- * Scans .knowledge/conventions/ for files and checks whether a matching
- * structural test exists in __tests__/structure/. Flags conventions that
- * are testable but have no enforcement.
+ * Scans .knowledge/policies/ and checks whether each policy is mapped
+ * to a structural test. Warns on unmapped policies.
  *
- * This is a starter test from the claude-pipeline-template. Customize the
- * DESIGN_GUIDELINES set for your project's non-testable conventions.
+ * See: .knowledge/policies/architecture/testable-architecture.md
  */
 
-import { readdirSync, existsSync } from 'fs';
+import { existsSync, readdirSync, statSync } from 'fs';
 import { resolve, join } from 'path';
 
 const ROOT = resolve(__dirname, '../..');
-const CONVENTIONS_DIR = resolve(ROOT, '.knowledge/conventions');
-const STRUCTURE_TESTS_DIR = resolve(ROOT, '__tests__/structure');
+const POLICIES_DIR = resolve(ROOT, '.knowledge/policies');
+const STRUCTURE_DIR = resolve(ROOT, '__tests__/structure');
 
 /**
- * Conventions that are design guidelines and can't be structurally tested.
- * Add your project's non-testable conventions here.
+ * Policy → test mapping. CUSTOMIZE for your project.
+ * Every testable policy must have at least one test listed here.
  */
-const DESIGN_GUIDELINES = new Set([
-  // CUSTOMIZE: Add convention filenames that are design guidelines
-  // e.g., 'typography.md', 'motion.md', 'ux-writing.md'
+const POLICY_TEST_MAP: Record<string, string[]> = {
+  // CUSTOMIZE: Add your policy → test mappings
+  // 'architecture/dependency-direction.md': ['dependency-direction.test.ts'],
+};
+
+/**
+ * Policies that are design guidelines — not structurally testable.
+ * CUSTOMIZE: Add your project's non-testable policies.
+ */
+const DESIGN_GUIDELINES = new Set<string>([
+  // CUSTOMIZE: e.g., 'ui/typography.md', 'ui/motion.md'
 ]);
 
-function getConventionFiles(): string[] {
-  if (!existsSync(CONVENTIONS_DIR)) return [];
+function getPolicyFiles(): string[] {
+  if (!existsSync(POLICIES_DIR)) return [];
   const files: string[] = [];
-
   function walk(dir: string, prefix = '') {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (entry.isDirectory()) {
-        walk(join(dir, entry.name), `${prefix}${entry.name}/`);
-      } else if (entry.name.endsWith('.md') && entry.name !== 'README.md') {
-        files.push(`${prefix}${entry.name}`);
+    for (const entry of readdirSync(dir)) {
+      const full = join(dir, entry);
+      if (statSync(full).isDirectory()) {
+        walk(full, `${prefix}${entry}/`);
+      } else if (entry.endsWith('.md') && entry !== 'README.md') {
+        files.push(`${prefix}${entry}`);
       }
     }
   }
-  walk(CONVENTIONS_DIR);
+  walk(POLICIES_DIR);
   return files;
 }
 
-function getStructuralTests(): string[] {
-  if (!existsSync(STRUCTURE_TESTS_DIR)) return [];
-  return readdirSync(STRUCTURE_TESTS_DIR)
-    .filter(f => f.endsWith('.test.ts'));
-}
-
 describe('Knowledge test coverage', () => {
-  it('lists conventions and their test coverage', () => {
-    const conventions = getConventionFiles();
-    const tests = getStructuralTests();
-
-    const untested: string[] = [];
-    const tested: string[] = [];
-    const guidelines: string[] = [];
-
-    for (const conv of conventions) {
-      if (DESIGN_GUIDELINES.has(conv)) {
-        guidelines.push(conv);
-        continue;
-      }
-
-      // Check if any structural test name relates to this convention
-      const baseName = conv.replace('.md', '').replace(/\//g, '-');
-      const hasTest = tests.some(t =>
-        t.includes(baseName) ||
-        baseName.split('-').some(part => part.length > 3 && t.includes(part))
-      );
-
-      if (hasTest) {
-        tested.push(conv);
-      } else {
-        untested.push(conv);
+  it('mapped policies have existing test files', () => {
+    const missing: string[] = [];
+    for (const [policy, tests] of Object.entries(POLICY_TEST_MAP)) {
+      for (const test of tests) {
+        if (!existsSync(resolve(STRUCTURE_DIR, test))) {
+          missing.push(`${policy} → ${test} (missing)`);
+        }
       }
     }
+    expect(missing).toEqual([]);
+  });
 
-    // Report coverage
-    console.log(`Knowledge test coverage:`);
-    console.log(`  Tested: ${tested.length}`);
-    console.log(`  Untested: ${untested.length}`);
-    console.log(`  Design guidelines (skipped): ${guidelines.length}`);
+  it('reports unmapped policies', () => {
+    const allKnown = new Set([...Object.keys(POLICY_TEST_MAP), ...DESIGN_GUIDELINES]);
+    const policies = getPolicyFiles();
 
-    if (untested.length > 0) {
-      console.warn(`\nConventions without structural tests:`);
-      for (const u of untested) {
-        console.warn(`  - .knowledge/conventions/${u}`);
+    const unmapped = policies.filter(p => !allKnown.has(p));
+
+    if (unmapped.length > 0) {
+      console.warn(`Policies not mapped in knowledge-test-coverage.test.ts:`);
+      for (const u of unmapped) {
+        console.warn(`  - policies/${u}`);
       }
-      console.warn(`\nAdd tests to __tests__/structure/ or mark as design guidelines.`);
+      console.warn(`Add to POLICY_TEST_MAP or DESIGN_GUIDELINES.`);
     }
 
-    // This test warns but doesn't fail — projects add tests incrementally.
-    // To enforce full coverage, change this to:
-    // expect(untested).toEqual([]);
+    // Warns but doesn't fail — projects add mappings incrementally.
+    // To enforce: expect(unmapped).toEqual([]);
   });
 });

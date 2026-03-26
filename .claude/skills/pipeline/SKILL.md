@@ -81,19 +81,21 @@ After verify passes, reflect on each task you implemented:
    - `.knowledge/<file>.md` missing guidance on <topic> — found in <where>. Test: <how to catch this automatically>. (#$NUMBER)
    ```
 
-2. **Did you discover a concept that applies broadly but isn't documented?**
-   → Create `.knowledge/concepts/<name>.md`
+2. **Did you discover a rule/constraint that isn't documented?**
+   → Create a policy: `.knowledge/policies/<scope>/<name>.md` using the policy format
+     (SCOPE, RULES, EXCEPTIONS, ANTI-PATTERNS, ENFORCEMENT).
+   → Also create the structural test referenced in the ENFORCEMENT section.
 
-3. **Did you learn a project convention that isn't written down?**
-   → Create or update `.knowledge/conventions/<name>.md`
+3. **Did you encounter business logic the pipeline should know?**
+   → Create or update `.knowledge/models/<name>.md` using the model format
+     (ENTITIES, RELATIONSHIPS, INVARIANTS, KEY FILES).
 
-4. **Did you encounter domain knowledge the pipeline should know?**
-   → Create or update `.knowledge/domain/<name>.md`
-
-5. **Did you discover a convention specific to a directory you worked in?**
+4. **Did you discover a convention specific to a directory you worked in?**
    → Check if that directory has a `CLAUDE.md` already
-   → If not, create one following `.knowledge/templates/folder-claude-md.md` — max 5 lines, just pointers to `.knowledge/` files
+   → If not, create one following `.knowledge/templates/folder-claude-md.md` — max 5 lines, `See:` links to policies/models
    → If yes but it's missing a relevant link, add the "See:" line
+
+See `.knowledge/ENGINE-TYPES.md` for the full format reference.
 
 If nothing was missing — do nothing. No gaps = knowledge graph is working well.
 
@@ -168,6 +170,6 @@ Read and follow `.claude/skills/optimize/SKILL.md`.
 
 Read the codebase and `.knowledge/` knowledge graph. Identify the highest-impact improvement. Create an epic with 2-4 stories following `.knowledge/templates/epic.md` and `.knowledge/templates/story.md`.
 
-Populate every story section — especially Knowledge (which concepts/conventions apply) and Tasks (which templates/patterns to follow). This minimizes token waste during implementation.
+Populate every story section — especially Knowledge (which policies/models apply) and Tasks (which templates/patterns to follow). This minimizes token waste during implementation.
 
 The next pipeline run picks up the first new story.

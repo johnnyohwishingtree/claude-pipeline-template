@@ -18,9 +18,8 @@ The pipeline doesn't just write code — it builds a knowledge graph about your 
 
 ```
 .knowledge/
-├── concepts/        # Cross-cutting principles (drift detection, error handling)
-├── conventions/     # Project-specific rules (testing patterns, styling, storage)
-├── domain/          # Business logic (what the code should do)
+├── policies/        # Constraints by scope (SCOPE/RULES/ENFORCEMENT)
+├── models/          # Business entities (ENTITIES/RELATIONSHIPS/INVARIANTS)
 ├── templates/       # File structure definitions (how to write a module, test, etc.)
 ├── patterns/        # Multi-file recipes (how to add a screen, API endpoint, etc.)
 └── rubrics/         # Quality criteria (what "good" means)
@@ -43,8 +42,8 @@ cd my-project
 
 - **`CLAUDE.md`** — replace with your project's context, tech stack, run commands
 - **`.claude/skills/pipeline/SKILL.md`** — find-and-replace `OWNER/REPO` with your org/repo, update verify commands
-- **`.knowledge/conventions/`** — add your project's testing, styling, and other conventions
-- **`.knowledge/domain/`** — add business logic knowledge specific to your project
+- **`.knowledge/policies/`** — add your project's testing, styling, and other conventions
+- **`.knowledge/models/`** — add business logic knowledge specific to your project
 
 ### 3. Set up scheduled tasks on claude.ai
 
@@ -87,9 +86,8 @@ The next pipeline run picks it up.
 └── index.md                   # System manifest
 
 .knowledge/ (read-write — pipeline edits freely)
-├── concepts/                  # Cross-cutting principles
-├── conventions/               # Project-specific rules
-├── domain/                    # Business logic
+├── policies/                  # Constraints by scope (SCOPE/RULES/ENFORCEMENT)
+├── models/                    # Business entities (ENTITIES/RELATIONSHIPS/INVARIANTS)
 ├── templates/                 # File structure definitions
 ├── patterns/                  # Multi-file change recipes
 └── rubrics/                   # Quality evaluation criteria
@@ -97,7 +95,7 @@ The next pipeline run picks it up.
 
 **`.claude/` is read-only.** Skills and rules need human approval to change. This prevents the pipeline from weakening its own constraints.
 
-**`.knowledge/` is read-write.** Templates, patterns, and concepts evolve as the pipeline learns. Gaps get added during implementation, resolved by `/optimize`, and compressed when files get too long.
+**`.knowledge/` is read-write.** Policies, models, and templates evolve as the pipeline learns. Gaps get added during implementation, resolved by `/optimize`. See `ENGINE-TYPES.md` for the five knowledge engine types.
 
 ## The Self-Improvement Loop
 

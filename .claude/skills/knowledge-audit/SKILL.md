@@ -27,20 +27,18 @@ For each rule, run the appropriate check. Common patterns:
 - **Code complexity thresholds** ("extract when > N") → count occurrences per file
 - **Security boundaries** ("sensitive data stays in X") → trace data flow from source to storage
 
-Read each convention's anti-patterns section — those are concrete violations to grep for.
+For each policy, read its SCOPE and RULES sections to determine what to check and where.
 
 ## Step 3: Check knowledge test coverage
 
-For each `.knowledge/conventions/` file, verify a structural test exists in `__tests__/structure/` that enforces it.
+For each `.knowledge/policies/` file, read its ENFORCEMENT section and verify the referenced test exists. The `knowledge-test-coverage.test.ts` meta-test tracks the full mapping.
 
-For any convention **without** a structural test:
-1. Determine if the convention IS structurally testable (can you grep/parse for violations?)
-2. If yes → write the test and add it to `__tests__/structure/`
-3. If no (design guideline) → skip, but note it in the report
+For any policy **without** an ENFORCEMENT test:
+1. Is it structurally testable? → write the test
+2. Is it a design guideline? → skip, note it
+3. Add new policies to `knowledge-test-coverage.test.ts` mapping
 
-Also check `.knowledge/concepts/` and `.knowledge/domain/` for testable rules.
-
-**New knowledge files added since last audit** should be flagged if they have no test.
+**New knowledge files added since last audit** should be flagged if not mapped.
 
 ## Step 4: Evaluate each finding
 

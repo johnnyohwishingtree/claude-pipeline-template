@@ -33,7 +33,7 @@ Add more checks as new folder CLAUDE.md files are created — read the rules, th
 - Modules with no corresponding test file
 
 ### Architecture violations
-- Wrong dependency direction (check `.knowledge/concepts/` for project rules)
+- Wrong dependency direction (check `.knowledge/policies/architecture/` for project rules)
 - Source files over 500 lines
 
 ### Drift
@@ -73,7 +73,7 @@ Findings from audits and pipeline runs. Fix stories resolve these and remove the
 - `src/path/to/file` violates <rule> — <what should change>. Test: <how to prevent recurrence>. (audit-YYYY-MM-DD)
 
 ## Knowledge updates
-- `.knowledge/conventions/foo.md` says X but codebase does Y everywhere — update convention. (audit-YYYY-MM-DD)
+- `.knowledge/policies/foo.md` says X but codebase does Y everywhere — update convention. (audit-YYYY-MM-DD)
 
 ## Drift
 - Reference to `path/that/moved` in `.knowledge/foo.md` — update path. Test: structural test catches this. (audit-YYYY-MM-DD)

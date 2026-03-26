@@ -24,9 +24,8 @@ Task type names map to `.knowledge/patterns/<name>.md` or `.knowledge/templates/
 
 Which `.knowledge/` knowledge files are relevant to this story:
 
-- **Concepts:** `.knowledge/concepts/<relevant>.md` — cross-cutting principles
-- **Conventions:** `.knowledge/conventions/<relevant>.md` — project-specific rules
-- **Domain:** `.knowledge/domain/<relevant>.md` — business logic context
+- **Policies:** `.knowledge/policies/<scope>/<relevant>.md` — constraints to follow
+- **Models:** `.knowledge/models/<relevant>.md` — business logic context
 
 ## Context (read before implementing)
 

@@ -10,20 +10,23 @@ Takes a single `.knowledge/` file, scans the relevant codebase for violations, a
 
 ## Usage
 ```
-/apply-knowledge conventions/testing.md           # Fix testing violations
-/apply-knowledge concepts/dependency-direction.md  # Fix import boundaries
-/apply-knowledge conventions/styling.md --dry-run   # Report only
+/apply-knowledge policies/testing/test-conventions.md           # Fix testing violations
+/apply-knowledge policies/architecture/dependency-direction.md  # Fix import boundaries
+/apply-knowledge policies/ui/styling.md --dry-run   # Report only
 /apply-knowledge domain/form-engine.md --scope src/schemas  # Scoped
 ```
 
 ## Step 1: Load the knowledge file
 
 Read the specified `.knowledge/` file. Extract:
-- **Rules**: concrete "do this" statements
-- **Anti-patterns**: concrete "never do this" statements
-- **Scope**: which directories/file types the rules apply to
+
+If it's a **policy** (`policies/`), read its SCOPE, RULES, and EXCEPTIONS sections.
+If it's a **model** (`models/`), read its INVARIANTS and KEY FILES sections.
 
 ## Step 2: Determine what to scan
+
+For policies: the **SCOPE** section lists the exact directories.
+For models: the **KEY FILES** section lists the files to check.
 
 Infer scope from the knowledge file content, or use `--scope` override. Read the file's rules to determine which source directories they apply to.
 

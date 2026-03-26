@@ -26,7 +26,7 @@ See: .knowledge/<path>.md
 
 Lowest level — never import stores or UI code. Accept runtime state as parameters.
 
-See: .knowledge/concepts/dependency-direction.md
+See: .knowledge/policies/architecture/dependency-direction.md
 ```
 
 ```markdown
@@ -34,7 +34,7 @@ See: .knowledge/concepts/dependency-direction.md
 
 Mirrors src/ structure. Each source file has a matching test file.
 
-See: .knowledge/conventions/testing.md
+See: .knowledge/policies/testing/test-conventions.md
 ```
 
 ```markdown
@@ -42,5 +42,5 @@ See: .knowledge/conventions/testing.md
 
 Receive data via props only. No direct store or service imports.
 
-See: .knowledge/concepts/dependency-direction.md
+See: .knowledge/policies/architecture/dependency-direction.md
 ```
