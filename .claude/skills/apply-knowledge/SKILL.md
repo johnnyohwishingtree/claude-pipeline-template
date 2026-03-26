@@ -45,15 +45,25 @@ Apply fixes one file at a time:
 - Run typecheck after each file
 - If a fix requires judgment (not mechanical), skip and add to gaps.md
 
-## Step 5: Write tests for fixes
+## Step 5: Cascade — check files that reference this knowledge
+
+After updating a policy or model, check for cascade effects:
+1. Find all folder CLAUDE.md files that `See:` this file
+2. Find all other knowledge files that reference this file
+3. Verify they're still consistent with the updated content
+4. If a referenced fact changed, update all referencing files
+
+This prevents denormalization drift — one source of truth, all references stay in sync.
+
+## Step 6: Write tests for fixes
 
 Every fix must have a test that prevents recurrence. Check if a structural test already covers it — if not, create one.
 
-## Step 6: Verify
+## Step 7: Verify
 
 Run the project's verification commands.
 
-## Step 7: Report
+## Step 8: Report
 
 - Files scanned
 - Violations found (by rule)
