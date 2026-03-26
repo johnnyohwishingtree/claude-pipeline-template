@@ -9,6 +9,7 @@ Read this first. Maps every artifact in the pipeline system.
 | `skills/pipeline/SKILL.md` | Autonomous story loop (hourly scheduled task) |
 | `skills/audit/SKILL.md` | Drift detection, dead code, index sync (3x daily) |
 | `skills/knowledge-audit/SKILL.md` | Code vs knowledge compliance + test strategies |
+| `skills/apply-knowledge/SKILL.md` | Scan and fix violations against one knowledge file |
 | `skills/optimize/SKILL.md` | Resolve gaps + compress knowledge graph |
 | `rules/` | Always-on constraints (auto-loaded) |
 | `settings.json` | Permissions |
